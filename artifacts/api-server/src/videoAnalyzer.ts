@@ -79,16 +79,37 @@ async function getVideoInfo(url: string): Promise<VideoInfo> {
   return { title, duration, uploader, platform, url, isShort, fileSize };
 }
 
-async function downloadVideoFile(url: string, outputPath: string): Promise<void> {
-  await execFileAsync("yt-dlp", [
-    "-f",
-    "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-    "--merge-output-format",
-    "mp4",
-    "-o",
-    outputPath,
-    url,
-  ]);
+async function downloadVideoFile(url: string, outputPath: string): Promise<string | null> {
+  const template = outputPath.replace(".mp4", ".%(ext)s");
+  try {
+    await execFileAsync("yt-dlp", [
+      "-f",
+      "best[ext=mp4]/best[filesize<24M]/best",
+      "--max-filesize",
+      "24M",
+      "-o",
+      template,
+      url,
+    ]);
+  } catch {
+    // fallback: qualquer formato disponível
+    await execFileAsync("yt-dlp", [
+      "-f",
+      "worst",
+      "--max-filesize",
+      "24M",
+      "-o",
+      template,
+      url,
+    ]);
+  }
+
+  // yt-dlp pode mudar a extensão — procura o arquivo gerado
+  const dir = path.dirname(outputPath);
+  const base = path.basename(outputPath, ".mp4");
+  const files = fs.readdirSync(dir).filter((f) => f.startsWith(base));
+  if (files.length === 0) return null;
+  return path.join(dir, files[0]);
 }
 
 async function downloadAudio(url: string, outputPath: string): Promise<void> {
@@ -240,12 +261,19 @@ export async function analyzeVideo(url: string): Promise<AnalysisResult> {
 
     let videoFilePath: string | undefined;
     try {
-      await downloadVideoFile(url, videoPath);
-      const stat = fs.statSync(videoPath);
-      if (stat.size <= 25 * 1024 * 1024) {
-        videoFilePath = videoPath;
+      const downloaded = await downloadVideoFile(url, videoPath);
+      if (downloaded && fs.existsSync(downloaded)) {
+        const stat = fs.statSync(downloaded);
+        if (stat.size <= 25 * 1024 * 1024) {
+          videoFilePath = downloaded;
+          logger.info({ size: stat.size, path: downloaded }, "Vídeo baixado para envio no Discord");
+        } else {
+          fs.unlinkSync(downloaded);
+          logger.info({ size: stat.size }, "Vídeo muito grande para enviar no Discord (>25MB)");
+        }
       }
-    } catch {
+    } catch (err) {
+      logger.warn({ err }, "Não foi possível baixar o vídeo para envio");
     }
 
     return { videoInfo, music, transcript, videoFilePath };
