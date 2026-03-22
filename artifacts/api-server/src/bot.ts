@@ -14,8 +14,11 @@ export function startBot() {
     intents: [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
-      GatewayIntentBits.MessageContent,
-      GatewayIntentBits.GuildMembers,
+      // As intents abaixo são PRIVILEGIADAS e precisam ser ativadas em:
+      // https://discord.com/developers/applications -> seu bot -> "Bot" -> "Privileged Gateway Intents"
+      // Descomente após ativar no painel:
+      // GatewayIntentBits.MessageContent,
+      // GatewayIntentBits.GuildMembers,
     ],
   });
 
