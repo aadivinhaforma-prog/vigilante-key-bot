@@ -81,27 +81,37 @@ async function getVideoInfo(url: string): Promise<VideoInfo> {
 
 async function downloadVideoFile(url: string, outputPath: string): Promise<string | null> {
   const template = outputPath.replace(".mp4", ".%(ext)s");
-  try {
-    await execFileAsync("yt-dlp", [
-      "-f",
-      "best[ext=mp4]/best[filesize<24M]/best",
-      "--max-filesize",
-      "24M",
-      "-o",
-      template,
-      url,
-    ]);
-  } catch {
-    // fallback: qualquer formato disponível
-    await execFileAsync("yt-dlp", [
-      "-f",
-      "worst",
-      "--max-filesize",
-      "24M",
-      "-o",
-      template,
-      url,
-    ]);
+
+  const attempts = [
+    // Tentativa 1: cliente iOS do YouTube (bypassa SABR)
+    [
+      "--extractor-args", "youtube:player_client=ios",
+      "-f", "best[ext=mp4]/best",
+      "--max-filesize", "24M",
+      "-o", template, url,
+    ],
+    // Tentativa 2: cliente mweb
+    [
+      "--extractor-args", "youtube:player_client=mweb",
+      "-f", "best[ext=mp4]/best",
+      "--max-filesize", "24M",
+      "-o", template, url,
+    ],
+    // Tentativa 3: sem restrição de formato
+    [
+      "--extractor-args", "youtube:player_client=ios",
+      "--max-filesize", "24M",
+      "-o", template, url,
+    ],
+  ];
+
+  for (const args of attempts) {
+    try {
+      await execFileAsync("yt-dlp", args);
+      break;
+    } catch {
+      // tenta próximo
+    }
   }
 
   // yt-dlp pode mudar a extensão — procura o arquivo gerado
@@ -113,16 +123,33 @@ async function downloadVideoFile(url: string, outputPath: string): Promise<strin
 }
 
 async function downloadAudio(url: string, outputPath: string): Promise<void> {
-  await execFileAsync("yt-dlp", [
-    "-x",
-    "--audio-format",
-    "mp3",
-    "--audio-quality",
-    "0",
-    "-o",
-    outputPath,
-    url,
-  ]);
+  const attempts = [
+    [
+      "--extractor-args", "youtube:player_client=ios",
+      "-x", "--audio-format", "mp3", "--audio-quality", "0",
+      "-o", outputPath, url,
+    ],
+    [
+      "--extractor-args", "youtube:player_client=mweb",
+      "-x", "--audio-format", "mp3", "--audio-quality", "0",
+      "-o", outputPath, url,
+    ],
+    [
+      "-x", "--audio-format", "mp3", "--audio-quality", "0",
+      "-o", outputPath, url,
+    ],
+  ];
+
+  let lastErr: unknown;
+  for (const args of attempts) {
+    try {
+      await execFileAsync("yt-dlp", args);
+      return;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr;
 }
 
 async function detectMusicInSegment(
