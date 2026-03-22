@@ -57,6 +57,8 @@ function buildVideoResponse(result: Awaited<ReturnType<typeof analyzeVideo>>): s
       if (m.releaseDate) line += `, ${m.releaseDate.slice(0, 4)}`;
       if (m.album) line += `)`;
       line += `\n> ⏩ aparece em \`${m.timestamp}\``;
+      if (m.spotifyUrl) line += ` · [Spotify](${m.spotifyUrl})`;
+      if (m.appleUrl) line += ` · [Apple Music](${m.appleUrl})`;
       msg += line + "\n";
     });
   } else {
