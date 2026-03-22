@@ -135,10 +135,14 @@ function buildTrendingEmbed(result: TrendingResult, page: number): EmbedBuilder 
     ? `${result.categoria} · ${result.tema}`
     : result.categoria;
 
+  const descricao = item.url
+    ? `**[${item.titulo}](${item.url})**\n📺 Canal: \`${item.canal}\``
+    : `**${item.titulo}**\n📺 Canal: \`${item.canal}\``;
+
   const embed = new EmbedBuilder()
     .setColor(statusColor)
-    .setTitle(`${statusEmoji} ${statusEmoji === "🚀" ? "EXPLODINDO" : "EM ASCENSÃO"} — #${item.rank} no ${result.plataforma}`)
-    .setDescription(`**${item.titulo}**\n📺 Canal/Perfil: \`${item.canal}\``)
+    .setTitle(`${statusEmoji} ${item.status} — #${item.rank} no ${result.plataforma}`)
+    .setDescription(descricao)
     .addFields(
       {
         name: "🔍 Busca",
@@ -146,13 +150,13 @@ function buildTrendingEmbed(result: TrendingResult, page: number): EmbedBuilder 
         inline: true,
       },
       {
-        name: "📈 Crescimento",
-        value: `**${item.crescimento}** de views`,
+        name: "👁️ Views",
+        value: `**${item.views}**`,
         inline: true,
       },
       {
-        name: "📊 Status",
-        value: `${statusEmoji} **${item.status}**`,
+        name: "📈 Crescimento Est.",
+        value: `**${item.crescimento}**`,
         inline: true,
       },
       {
