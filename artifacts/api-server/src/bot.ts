@@ -78,8 +78,7 @@ function buildVideoResponse(result: Awaited<ReturnType<typeof analyzeVideo>>): s
     msg += `### 🗣️ O que foi falado\n*Nenhuma fala detectada.*\n\n`;
   }
 
-  msg += `🔗 **Link original:** ${videoInfo.url}\n`;
-  msg += `📥 **Baixar no celular:** https://snaptube.com`;
+  msg += `🔗 **Link original:** ${videoInfo.url}`;
 
   if (msg.length > 2000) {
     msg = msg.slice(0, 1990) + "...";

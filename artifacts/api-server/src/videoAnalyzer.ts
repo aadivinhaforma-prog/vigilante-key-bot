@@ -239,15 +239,13 @@ export async function analyzeVideo(url: string): Promise<AnalysisResult> {
     ]);
 
     let videoFilePath: string | undefined;
-    if (videoInfo.isShort) {
-      try {
-        await downloadVideoFile(url, videoPath);
-        const stat = fs.statSync(videoPath);
-        if (stat.size <= 25 * 1024 * 1024) {
-          videoFilePath = videoPath;
-        }
-      } catch {
+    try {
+      await downloadVideoFile(url, videoPath);
+      const stat = fs.statSync(videoPath);
+      if (stat.size <= 25 * 1024 * 1024) {
+        videoFilePath = videoPath;
       }
+    } catch {
     }
 
     return { videoInfo, music, transcript, videoFilePath };
