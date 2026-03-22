@@ -7,10 +7,17 @@ import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
   AttachmentBuilder,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ButtonInteraction,
+  ComponentType,
 } from "discord.js";
 import fs from "fs";
 import { logger } from "./lib/logger";
 import { analyzeVideo, formatDuration } from "./videoAnalyzer";
+import { analyzeTrending, TrendingResult } from "./trendingAnalyzer";
 
 const token = process.env.DISCORD_BOT_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
@@ -18,6 +25,9 @@ const clientId = process.env.DISCORD_CLIENT_ID;
 if (!token) {
   logger.warn("DISCORD_BOT_TOKEN não está definido. O bot não será iniciado.");
 }
+
+// Armazena as páginas de trending em memória por messageId
+const trendingCache = new Map<string, { result: TrendingResult; page: number }>();
 
 const commands = [
   new SlashCommandBuilder()
@@ -28,6 +38,34 @@ const commands = [
         .setName("link")
         .setDescription("Link do YouTube, TikTok ou Instagram")
         .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("trending")
+    .setDescription("🔍 Vigilante: descobre o que está bombando agora")
+    .addStringOption((opt) =>
+      opt
+        .setName("plataforma")
+        .setDescription("Onde o bot vai caçar as tendências")
+        .setRequired(true)
+        .addChoices(
+          { name: "YouTube", value: "YouTube" },
+          { name: "YouTube Shorts", value: "YouTube Shorts" },
+          { name: "TikTok", value: "TikTok" },
+          { name: "Instagram Reels", value: "Instagram Reels" }
+        )
+    )
+    .addStringOption((opt) =>
+      opt
+        .setName("categoria")
+        .setDescription("Gênero do conteúdo (ex: Edição, Games, Piadas). Deixe vazio para top geral.")
+        .setRequired(false)
+    )
+    .addStringOption((opt) =>
+      opt
+        .setName("tema")
+        .setDescription("Alvo específico (ex: Homem-Aranha, Blox Fruits). Complementa a categoria.")
+        .setRequired(false)
     ),
 ];
 
@@ -42,6 +80,8 @@ async function registerCommands(botToken: string, appClientId: string) {
     logger.error({ err }, "Erro ao registrar comandos slash");
   }
 }
+
+// ─── /video ───────────────────────────────────────────────
 
 function buildVideoResponse(result: Awaited<ReturnType<typeof analyzeVideo>>): string {
   const { videoInfo, music, transcript } = result;
@@ -69,10 +109,7 @@ function buildVideoResponse(result: Awaited<ReturnType<typeof analyzeVideo>>): s
 
   if (transcript && transcript.trim().length > 0) {
     const maxLen = 900;
-    const truncated =
-      transcript.length > maxLen
-        ? transcript.slice(0, maxLen) + "..."
-        : transcript;
+    const truncated = transcript.length > maxLen ? transcript.slice(0, maxLen) + "..." : transcript;
     msg += `### 🗣️ O que foi falado\n${truncated}\n\n`;
   } else {
     msg += `### 🗣️ O que foi falado\n*Nenhuma fala detectada.*\n\n`;
@@ -87,50 +124,180 @@ function buildVideoResponse(result: Awaited<ReturnType<typeof analyzeVideo>>): s
   return msg;
 }
 
+// ─── /trending ────────────────────────────────────────────
+
+function buildTrendingEmbed(result: TrendingResult, page: number): EmbedBuilder {
+  const item = result.itens[page];
+  const statusEmoji = item.status === "EXPLODINDO" ? "🚀" : "🔥";
+  const statusColor = item.status === "EXPLODINDO" ? 0xff4500 : 0xffa500;
+
+  const tituloSecao = result.tema
+    ? `${result.categoria} · ${result.tema}`
+    : result.categoria;
+
+  const embed = new EmbedBuilder()
+    .setColor(statusColor)
+    .setTitle(`${statusEmoji} ${statusEmoji === "🚀" ? "EXPLODINDO" : "EM ASCENSÃO"} — #${item.rank} no ${result.plataforma}`)
+    .setDescription(`**${item.titulo}**\n📺 Canal/Perfil: \`${item.canal}\``)
+    .addFields(
+      {
+        name: "🔍 Busca",
+        value: tituloSecao,
+        inline: true,
+      },
+      {
+        name: "📈 Crescimento",
+        value: `**${item.crescimento}** de views`,
+        inline: true,
+      },
+      {
+        name: "📊 Status",
+        value: `${statusEmoji} **${item.status}**`,
+        inline: true,
+      },
+      {
+        name: "🎵 Áudio Viral",
+        value: item.audioViral,
+        inline: false,
+      },
+      {
+        name: "💡 Dica do Vigilante",
+        value: `> ${item.dica}`,
+        inline: false,
+      }
+    )
+    .setFooter({
+      text: `🕐 Atualizado em ${result.geradoEm} · Use os botões para navegar`,
+    });
+
+  return embed;
+}
+
+function buildTrendingButtons(page: number, total: number, messageId: string): ActionRowBuilder<ButtonBuilder> {
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`trending_prev_${messageId}`)
+      .setLabel("⬅️ Anterior")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page === 0),
+    new ButtonBuilder()
+      .setCustomId(`trending_page_${messageId}`)
+      .setLabel(`${page + 1} / ${total}`)
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(true),
+    new ButtonBuilder()
+      .setCustomId(`trending_next_${messageId}`)
+      .setLabel("Próximo ➡️")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page === total - 1)
+  );
+  return row;
+}
+
+// ─── Bot ──────────────────────────────────────────────────
+
 export function startBot() {
   if (!token) return;
 
   const client = new Client({
-    intents: [
-      GatewayIntentBits.Guilds,
-      GatewayIntentBits.GuildMessages,
-    ],
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
   });
 
   client.once(Events.ClientReady, async (readyClient) => {
     logger.info({ tag: readyClient.user.tag }, "Bot online!");
-
     const appClientId = clientId || readyClient.user.id;
     await registerCommands(token!, appClientId);
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
+    // ── Slash Commands ──
+    if (interaction.isChatInputCommand()) {
+      const cmd = interaction as ChatInputCommandInteraction;
 
-    const cmd = interaction as ChatInputCommandInteraction;
-
-    if (cmd.commandName === "video") {
-      const url = cmd.options.getString("link", true);
-
-      await cmd.deferReply();
-
-      try {
-        const result = await analyzeVideo(url);
-        const responseText = buildVideoResponse(result);
-
-        if (result.videoFilePath && fs.existsSync(result.videoFilePath)) {
-          const attachment = new AttachmentBuilder(result.videoFilePath);
-          await cmd.editReply({ content: responseText, files: [attachment] });
-          fs.unlinkSync(result.videoFilePath);
-        } else {
-          await cmd.editReply(responseText);
+      // /video
+      if (cmd.commandName === "video") {
+        const url = cmd.options.getString("link", true);
+        await cmd.deferReply();
+        try {
+          const result = await analyzeVideo(url);
+          const responseText = buildVideoResponse(result);
+          if (result.videoFilePath && fs.existsSync(result.videoFilePath)) {
+            const attachment = new AttachmentBuilder(result.videoFilePath);
+            await cmd.editReply({ content: responseText, files: [attachment] });
+            fs.unlinkSync(result.videoFilePath);
+          } else {
+            await cmd.editReply(responseText);
+          }
+        } catch (err) {
+          logger.error({ err }, "Erro ao analisar vídeo");
+          await cmd.editReply("❌ Não consegui analisar este vídeo. Verifique se o link é válido e tente novamente.");
         }
-      } catch (err) {
-        logger.error({ err }, "Erro ao analisar vídeo");
-        await cmd.editReply(
-          "❌ Não consegui analisar este vídeo. Verifique se o link é válido e tente novamente."
-        );
       }
+
+      // /trending
+      if (cmd.commandName === "trending") {
+        const plataforma = cmd.options.getString("plataforma", true);
+        const categoria = cmd.options.getString("categoria") || "";
+        const tema = cmd.options.getString("tema") || "";
+
+        await cmd.deferReply();
+
+        try {
+          const result = await analyzeTrending(plataforma, categoria, tema);
+
+          const embed = buildTrendingEmbed(result, 0);
+
+          // Envia primeiro sem buttons para pegar o messageId
+          const reply = await cmd.editReply({ embeds: [embed] });
+          const messageId = reply.id;
+
+          // Armazena no cache
+          trendingCache.set(messageId, { result, page: 0 });
+
+          // Limpa cache após 30 minutos
+          setTimeout(() => trendingCache.delete(messageId), 30 * 60 * 1000);
+
+          // Atualiza com os botões usando o messageId
+          const row = buildTrendingButtons(0, result.itens.length, messageId);
+          await cmd.editReply({ embeds: [embed], components: [row] });
+
+        } catch (err) {
+          logger.error({ err }, "Erro ao buscar trending");
+          await cmd.editReply("❌ Não consegui buscar as tendências agora. Tente novamente em alguns segundos.");
+        }
+      }
+    }
+
+    // ── Buttons ──
+    if (interaction.isButton()) {
+      const btn = interaction as ButtonInteraction;
+      const customId = btn.customId;
+
+      if (!customId.startsWith("trending_")) return;
+
+      const parts = customId.split("_");
+      const action = parts[1]; // "prev" | "next" | "page"
+      const messageId = parts[2];
+
+      const cached = trendingCache.get(messageId);
+      if (!cached) {
+        await btn.reply({ content: "⏳ Esta pesquisa expirou. Use `/trending` novamente.", ephemeral: true });
+        return;
+      }
+
+      if (action === "page") return; // botão de página desabilitado, ignora
+
+      let newPage = cached.page;
+      if (action === "prev") newPage = Math.max(0, newPage - 1);
+      if (action === "next") newPage = Math.min(cached.result.itens.length - 1, newPage + 1);
+
+      cached.page = newPage;
+      trendingCache.set(messageId, cached);
+
+      const embed = buildTrendingEmbed(cached.result, newPage);
+      const row = buildTrendingButtons(newPage, cached.result.itens.length, messageId);
+
+      await btn.update({ embeds: [embed], components: [row] });
     }
   });
 
