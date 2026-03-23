@@ -137,7 +137,7 @@ function formatViews(views: number): string {
 }
 
 // Calcula % de chance de viralização baseado nos views reais
-function calcChanceViral(views: number, rank: number): number {
+export function calcChanceViral(views: number, rank: number): number {
   // Escala logarítmica: 1M views = ~80%, 100M = ~99%, 10K = ~20%
   let base = 0;
   if (views >= 100_000_000) base = 95;

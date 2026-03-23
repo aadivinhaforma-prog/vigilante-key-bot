@@ -35,6 +35,7 @@ export interface VideoInfo {
   url: string;
   isShort: boolean;
   fileSize?: number;
+  views: number;
 }
 
 export interface AnalysisResult {
@@ -63,7 +64,7 @@ function formatDuration(seconds: number): string {
 async function getVideoInfo(url: string): Promise<VideoInfo> {
   const { stdout } = await execFileAsync("yt-dlp", [
     "--print",
-    "%(title)s\n%(duration)s\n%(uploader)s\n%(filesize_approx)s",
+    "%(title)s\n%(duration)s\n%(uploader)s\n%(filesize_approx)s\n%(view_count)s",
     "--no-download",
     url,
   ]);
@@ -73,10 +74,11 @@ async function getVideoInfo(url: string): Promise<VideoInfo> {
   const duration = parseFloat(lines[1]) || 0;
   const uploader = lines[2] || "Desconhecido";
   const fileSize = parseFloat(lines[3]) || 0;
+  const views = parseInt(lines[4]) || 0;
   const platform = detectPlatform(url);
   const isShort = duration <= 180;
 
-  return { title, duration, uploader, platform, url, isShort, fileSize };
+  return { title, duration, uploader, platform, url, isShort, fileSize, views };
 }
 
 async function downloadVideoFile(url: string, outputPath: string): Promise<string | null> {

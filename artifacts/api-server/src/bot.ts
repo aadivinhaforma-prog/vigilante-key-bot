@@ -17,7 +17,7 @@ import {
 import fs from "fs";
 import { logger } from "./lib/logger";
 import { analyzeVideo, formatDuration } from "./videoAnalyzer";
-import { analyzeTrending, TrendingResult } from "./trendingAnalyzer";
+import { analyzeTrending, TrendingResult, calcChanceViral } from "./trendingAnalyzer";
 
 const token = process.env.DISCORD_BOT_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
@@ -86,8 +86,19 @@ async function registerCommands(botToken: string, appClientId: string) {
 function buildVideoResponse(result: Awaited<ReturnType<typeof analyzeVideo>>): string {
   const { videoInfo, music, transcript } = result;
 
+  const chanceViral = calcChanceViral(videoInfo.views, 1);
+  const viralBar = buildViralBar(chanceViral);
+  const viewsStr = videoInfo.views >= 1_000_000
+    ? `${(videoInfo.views / 1_000_000).toFixed(1)}M`
+    : videoInfo.views >= 1_000
+    ? `${(videoInfo.views / 1_000).toFixed(0)}K`
+    : videoInfo.views > 0 ? String(videoInfo.views) : null;
+
   let msg = `## 🎬 [${videoInfo.title}](${videoInfo.url})\n`;
-  msg += `**📱 Plataforma:** ${videoInfo.platform} · ⏱️ ${formatDuration(videoInfo.duration)} · 🎙️ ${videoInfo.uploader}\n\n`;
+  msg += `**📱 Plataforma:** ${videoInfo.platform} · ⏱️ ${formatDuration(videoInfo.duration)} · 🎙️ ${videoInfo.uploader}`;
+  if (viewsStr) msg += ` · 👁️ ${viewsStr} views`;
+  msg += `\n\n`;
+  msg += `**🎯 Chance de Viralizar:** ${viralBar}\n\n`;
 
   if (music.length > 0) {
     msg += `### 🎵 Músicas detectadas\n`;
