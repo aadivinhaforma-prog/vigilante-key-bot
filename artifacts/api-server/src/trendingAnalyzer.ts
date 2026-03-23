@@ -18,6 +18,7 @@ export interface TrendingItem {
   url: string;
   status: "EM ASCENSÃO" | "EXPLODINDO";
   crescimento: string;
+  chanceViral: number; // 0-100%
   audioViral: string;
   dica: string;
 }
@@ -38,21 +39,44 @@ interface RawVideo {
   url: string;
 }
 
-// ─── Busca vídeos REAIS via yt-dlp ─────────────────────────
+// ─── Busca vídeos REAIS ordenados por views ─────────────────
 
 async function fetchRealVideos(
   plataforma: string,
   categoria: string,
   tema: string
 ): Promise<RawVideo[]> {
-  const query = buildQuery(plataforma, categoria, tema);
-  const ytdlpArgs = buildYtdlpArgs(plataforma, query);
+  const printFormat = "%(title)s|||%(channel)s|||%(view_count)s|||%(id)s";
+
+  let sourceUrl: string;
+
+  if (!categoria && !tema) {
+    // Trending geral: feed oficial do YouTube
+    if (plataforma === "YouTube" || plataforma === "YouTube Shorts") {
+      sourceUrl = "https://www.youtube.com/feed/trending";
+    } else if (plataforma === "TikTok") {
+      // YouTube search por trending tiktok ordenado por views
+      sourceUrl = buildYouTubeSearchUrl("tiktok viral trending", true);
+    } else {
+      sourceUrl = buildYouTubeSearchUrl("instagram reels viral trending", true);
+    }
+  } else {
+    // Busca específica: YouTube com ordenação por views (mais vistos)
+    const query = buildQuery(plataforma, categoria, tema);
+    sourceUrl = buildYouTubeSearchUrl(query, true);
+  }
+
+  const args = [
+    "--flat-playlist",
+    "--print", printFormat,
+    "--playlist-items", "1-20", // pega 20 para filtrar melhor
+    "--extractor-args", "youtube:player_client=ios",
+    "--no-warnings",
+    sourceUrl,
+  ];
 
   try {
-    const { stdout } = await execFileAsync("yt-dlp", ytdlpArgs, {
-      timeout: 60000,
-    });
-
+    const { stdout } = await execFileAsync("yt-dlp", args, { timeout: 60000 });
     const lines = stdout.trim().split("\n").filter(Boolean);
     const videos: RawVideo[] = [];
 
@@ -63,11 +87,17 @@ async function fetchRealVideos(
       if (!title || title === "NA" || !id || id === "NA") continue;
 
       const views = parseInt(viewsStr) || 0;
-      const url = buildUrl(plataforma, id);
-
-      videos.push({ title, channel: channel || "Desconhecido", views, id, url });
+      videos.push({
+        title: title.trim(),
+        channel: channel?.trim() || "Desconhecido",
+        views,
+        id,
+        url: buildVideoUrl(plataforma, id),
+      });
     }
 
+    // Ordena por views descendente e pega top 10
+    videos.sort((a, b) => b.views - a.views);
     return videos.slice(0, 10);
   } catch (err) {
     logger.error({ err }, "yt-dlp falhou ao buscar trending");
@@ -75,58 +105,27 @@ async function fetchRealVideos(
   }
 }
 
+// URL do YouTube com ordenação por "mais vistos" (sort by view count)
+function buildYouTubeSearchUrl(query: string, sortByViews: boolean): string {
+  const encoded = encodeURIComponent(query);
+  // sp=CAM%3D ordena por view count (mais vistos)
+  if (sortByViews) {
+    return `https://www.youtube.com/results?search_query=${encoded}&sp=CAM%3D`;
+  }
+  return `https://www.youtube.com/results?search_query=${encoded}`;
+}
+
 function buildQuery(plataforma: string, categoria: string, tema: string): string {
-  if (!categoria && !tema) return "";
   const parts = [categoria, tema].filter(Boolean);
   const base = parts.join(" ");
-
-  if (plataforma === "YouTube Shorts") return `${base} #shorts`;
-  if (plataforma === "TikTok") return base;
+  if (plataforma === "YouTube Shorts") return `${base} shorts`;
+  if (plataforma === "TikTok") return `${base} tiktok`;
+  if (plataforma === "Instagram Reels") return `${base} reels instagram`;
   return base;
 }
 
-function buildYtdlpArgs(plataforma: string, query: string): string[] {
-  const printFormat = "%(title)s|||%(channel)s|||%(view_count)s|||%(id)s";
-  const baseArgs = [
-    "--flat-playlist",
-    "--print", printFormat,
-    "--playlist-items", "1-10",
-    "--extractor-args", "youtube:player_client=ios",
-    "--no-warnings",
-  ];
-
-  // Sem query = busca trending geral da plataforma
-  if (!query) {
-    if (plataforma === "YouTube" || plataforma === "YouTube Shorts") {
-      return [...baseArgs, "https://www.youtube.com/feed/trending"];
-    }
-    if (plataforma === "TikTok") {
-      return [...baseArgs, "--no-extractor-args", "ytsearch10:tiktok trending viral 2025"];
-    }
-    if (plataforma === "Instagram Reels") {
-      return [...baseArgs, "--no-extractor-args", "ytsearch10:instagram reels trending viral 2025"];
-    }
-  }
-
-  // Com query = busca por tema específico
-  if (plataforma === "YouTube Shorts") {
-    return [...baseArgs, `ytsearch10:${query} shorts`];
-  }
-  if (plataforma === "TikTok") {
-    return ["--flat-playlist", "--print", printFormat, "--playlist-items", "1-10", "--no-warnings", `ytsearch10:tiktok ${query}`];
-  }
-  if (plataforma === "Instagram Reels") {
-    return ["--flat-playlist", "--print", printFormat, "--playlist-items", "1-10", "--no-warnings", `ytsearch10:instagram reels ${query}`];
-  }
-
-  // YouTube padrão
-  return [...baseArgs, `ytsearch10:${query}`];
-}
-
-function buildUrl(plataforma: string, id: string): string {
+function buildVideoUrl(plataforma: string, id: string): string {
   if (plataforma === "YouTube Shorts") return `https://youtube.com/shorts/${id}`;
-  if (plataforma === "TikTok") return `https://youtube.com/watch?v=${id}`;
-  if (plataforma === "Instagram Reels") return `https://youtube.com/watch?v=${id}`;
   return `https://youtube.com/watch?v=${id}`;
 }
 
@@ -134,7 +133,26 @@ function formatViews(views: number): string {
   if (views >= 1_000_000_000) return `${(views / 1_000_000_000).toFixed(1)}B`;
   if (views >= 1_000_000) return `${(views / 1_000_000).toFixed(1)}M`;
   if (views >= 1_000) return `${(views / 1_000).toFixed(0)}K`;
-  return String(views);
+  return views > 0 ? String(views) : "N/D";
+}
+
+// Calcula % de chance de viralização baseado nos views reais
+function calcChanceViral(views: number, rank: number): number {
+  // Escala logarítmica: 1M views = ~80%, 100M = ~99%, 10K = ~20%
+  let base = 0;
+  if (views >= 100_000_000) base = 95;
+  else if (views >= 50_000_000) base = 90;
+  else if (views >= 10_000_000) base = 82;
+  else if (views >= 5_000_000) base = 75;
+  else if (views >= 1_000_000) base = 65;
+  else if (views >= 500_000) base = 52;
+  else if (views >= 100_000) base = 40;
+  else if (views >= 10_000) base = 25;
+  else base = 12;
+
+  // Bônus por rank (#1 ganha +5, #10 perde -5)
+  const rankBonus = Math.round((10 - rank) * 0.8);
+  return Math.min(99, Math.max(5, base + rankBonus));
 }
 
 // ─── IA adiciona dicas em cima dos dados reais ─────────────
@@ -155,7 +173,7 @@ Esses são vídeos REAIS encontrados em ${plataforma} sobre "${[categoria, tema]
 
 ${listaVideos}
 
-Para CADA vídeo, gere exatamente este JSON (sem markdown):
+Para CADA vídeo, gere exatamente este JSON (sem markdown, sem explicação):
 
 {
   "itens": [
@@ -170,8 +188,8 @@ Para CADA vídeo, gere exatamente este JSON (sem markdown):
 }
 
 Regras:
-- status: "EXPLODINDO" se views acima de 500K, senão "EM ASCENSÃO"
-- crescimento: estimativa realista baseada nos views (entre +50% e +2000%)
+- status: "EXPLODINDO" se views acima de 1M, senão "EM ASCENSÃO"
+- crescimento: estimativa realista baseada nos views vs média do nicho
 - dica: prática, específica, voltada para quem quer criar conteúdo similar
 - audioViral: música que combina com o estilo do vídeo`;
 
@@ -194,7 +212,6 @@ Regras:
     const parsed = JSON.parse(content);
     aiItems = parsed.itens;
   } catch {
-    // fallback sem enriquecimento
     aiItems = videos.map((_, i) => ({
       rank: i + 1,
       status: "EM ASCENSÃO" as const,
@@ -214,6 +231,7 @@ Regras:
       url: v.url,
       status: ai.status,
       crescimento: ai.crescimento,
+      chanceViral: calcChanceViral(v.views, i + 1),
       audioViral: ai.audioViral,
       dica: ai.dica,
     };

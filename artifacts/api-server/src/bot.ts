@@ -126,6 +126,19 @@ function buildVideoResponse(result: Awaited<ReturnType<typeof analyzeVideo>>): s
 
 // ─── /trending ────────────────────────────────────────────
 
+function buildViralBar(chance: number): string {
+  const filled = Math.round(chance / 10);
+  const empty = 10 - filled;
+  const bar = "🟩".repeat(filled) + "⬛".repeat(empty);
+  let label = "";
+  if (chance >= 85) label = "🔥 ALTÍSSIMA";
+  else if (chance >= 65) label = "⚡ ALTA";
+  else if (chance >= 45) label = "📈 MÉDIA";
+  else if (chance >= 25) label = "📊 BAIXA";
+  else label = "❄️ FRIA";
+  return `${bar} **${chance}%** — ${label}`;
+}
+
 function buildTrendingEmbed(result: TrendingResult, page: number): EmbedBuilder {
   const item = result.itens[page];
   const statusEmoji = item.status === "EXPLODINDO" ? "🚀" : "🔥";
@@ -158,6 +171,11 @@ function buildTrendingEmbed(result: TrendingResult, page: number): EmbedBuilder 
         name: "📈 Crescimento Est.",
         value: `**${item.crescimento}**`,
         inline: true,
+      },
+      {
+        name: "🎯 Chance de Viralizar",
+        value: buildViralBar(item.chanceViral),
+        inline: false,
       },
       {
         name: "🎵 Áudio Viral",
