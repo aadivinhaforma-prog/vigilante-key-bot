@@ -18,6 +18,7 @@ import fs from "fs";
 import { logger } from "./lib/logger";
 import { analyzeVideo, formatDuration } from "./videoAnalyzer";
 import { analyzeTrending, TrendingResult, calcChanceViral } from "./trendingAnalyzer";
+import { preverViral, PrevisaoResult } from "./viralPredictor";
 
 const token = process.env.DISCORD_BOT_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
@@ -44,6 +45,16 @@ const commands = [
         .setName("receber_video")
         .setDescription("Permito receber o arquivo de vídeo? (padrão: Não)")
         .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("prever")
+    .setDescription("🔮 Vigilante tenta adivinhar se um vídeo vai bombar (não é garantia!)")
+    .addStringOption((opt) =>
+      opt
+        .setName("link")
+        .setDescription("Link do vídeo para analisar")
+        .setRequired(true)
     ),
 
   new SlashCommandBuilder()
@@ -137,6 +148,71 @@ function buildVideoResponse(result: Awaited<ReturnType<typeof analyzeVideo>>): s
   }
 
   return msg;
+}
+
+// ─── /prever ──────────────────────────────────────────────
+
+function buildPrevisaoEmbed(p: PrevisaoResult): EmbedBuilder {
+  const vai = p.veredicto === "VAI BOMBAR";
+  const color = vai ? 0x00c853 : 0xff1744;
+  const veredictoEmoji = vai ? "✅" : "❌";
+  const veredictoTexto = vai ? "✅ VAI BOMBAR" : "❌ NÃO VAI BOMBAR";
+
+  const filled = Math.round(p.confianca / 10);
+  const empty = 10 - filled;
+  const bar = (vai ? "🟩" : "🟥").repeat(filled) + "⬛".repeat(empty);
+
+  const viewsStr = p.views >= 1_000_000
+    ? `${(p.views / 1_000_000).toFixed(1)}M`
+    : p.views >= 1_000
+    ? `${(p.views / 1_000).toFixed(0)}K`
+    : p.views > 0 ? `${p.views}` : "N/D";
+
+  const favoraveis = p.pontosFavoraveis.map((f) => `✔ ${f}`).join("\n") || "—";
+  const contra = p.pontosContra.map((c) => `✘ ${c}`).join("\n") || "—";
+
+  return new EmbedBuilder()
+    .setColor(color)
+    .setTitle(`🔮 PREVISÃO DO VIGILANTE — ${veredictoTexto}`)
+    .setDescription(
+      `**${p.titulo}**\n📺 \`${p.canal}\` · ${p.plataforma} · 👁️ ${viewsStr} views`
+    )
+    .addFields(
+      {
+        name: `${veredictoEmoji} Veredicto`,
+        value: `**${p.veredicto}**\n${p.motivo}`,
+        inline: false,
+      },
+      {
+        name: "📊 Confiança da Previsão",
+        value: `${bar} **${p.confianca}%**`,
+        inline: false,
+      },
+      {
+        name: "✔ Pontos Favoráveis",
+        value: favoraveis,
+        inline: true,
+      },
+      {
+        name: "✘ Pontos Contra",
+        value: contra,
+        inline: true,
+      },
+      {
+        name: "💡 Como melhorar as chances",
+        value: `> ${p.dicaMelhora}`,
+        inline: false,
+      },
+      {
+        name: "⚠️ Aviso Importante",
+        value:
+          "Este é apenas um **chute informado** do Vigilante baseado nos dados do vídeo. " +
+          "Nenhum bot, IA ou pessoa consegue prever o futuro com 100% de certeza. " +
+          "Use isso como referência, não como verdade absoluta.",
+        inline: false,
+      }
+    )
+    .setFooter({ text: "🔮 Vigilante Key · Previsão gerada por IA · Pode errar!" });
 }
 
 // ─── /trending ────────────────────────────────────────────
@@ -274,6 +350,20 @@ export function startBot() {
           }
         } catch (err) {
           logger.error({ err }, "Erro ao analisar vídeo");
+          await cmd.editReply("❌ Não consegui analisar este vídeo. Verifique se o link é válido e tente novamente.");
+        }
+      }
+
+      // /prever
+      if (cmd.commandName === "prever") {
+        const url = cmd.options.getString("link", true);
+        await cmd.deferReply();
+        try {
+          const resultado = await preverViral(url);
+          const embed = buildPrevisaoEmbed(resultado);
+          await cmd.editReply({ embeds: [embed] });
+        } catch (err) {
+          logger.error({ err }, "Erro ao prever viralidade");
           await cmd.editReply("❌ Não consegui analisar este vídeo. Verifique se o link é válido e tente novamente.");
         }
       }
