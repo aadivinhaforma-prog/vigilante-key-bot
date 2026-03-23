@@ -38,6 +38,12 @@ const commands = [
         .setName("link")
         .setDescription("Link do YouTube, TikTok ou Instagram")
         .setRequired(true)
+    )
+    .addBooleanOption((opt) =>
+      opt
+        .setName("receber_video")
+        .setDescription("Permito receber o arquivo de vídeo? (padrão: Não)")
+        .setRequired(false)
     ),
 
   new SlashCommandBuilder()
@@ -94,7 +100,7 @@ function buildVideoResponse(result: Awaited<ReturnType<typeof analyzeVideo>>): s
     ? `${(videoInfo.views / 1_000).toFixed(0)}K`
     : videoInfo.views > 0 ? String(videoInfo.views) : null;
 
-  let msg = `## 🎬 [${videoInfo.title}](${videoInfo.url})\n`;
+  let msg = `## 🎬 ${videoInfo.title}\n`;
   msg += `**📱 Plataforma:** ${videoInfo.platform} · ⏱️ ${formatDuration(videoInfo.duration)} · 🎙️ ${videoInfo.uploader}`;
   if (viewsStr) msg += ` · 👁️ ${viewsStr} views`;
   msg += `\n\n`;
@@ -125,8 +131,6 @@ function buildVideoResponse(result: Awaited<ReturnType<typeof analyzeVideo>>): s
   } else {
     msg += `### 🗣️ O que foi falado\n*Nenhuma fala detectada.*\n\n`;
   }
-
-  msg += `🔗 **Link original:** ${videoInfo.url}`;
 
   if (msg.length > 2000) {
     msg = msg.slice(0, 1990) + "...";
@@ -250,15 +254,22 @@ export function startBot() {
       // /video
       if (cmd.commandName === "video") {
         const url = cmd.options.getString("link", true);
+        const receberVideo = cmd.options.getBoolean("receber_video") ?? false;
         await cmd.deferReply();
         try {
           const result = await analyzeVideo(url);
           const responseText = buildVideoResponse(result);
-          if (result.videoFilePath && fs.existsSync(result.videoFilePath)) {
+
+          // Só envia o arquivo se o usuário pediu explicitamente
+          if (receberVideo && result.videoFilePath && fs.existsSync(result.videoFilePath)) {
             const attachment = new AttachmentBuilder(result.videoFilePath);
             await cmd.editReply({ content: responseText, files: [attachment] });
             fs.unlinkSync(result.videoFilePath);
           } else {
+            // Limpa o arquivo mesmo sem enviar
+            if (result.videoFilePath && fs.existsSync(result.videoFilePath)) {
+              fs.unlinkSync(result.videoFilePath);
+            }
             await cmd.editReply(responseText);
           }
         } catch (err) {
