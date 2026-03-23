@@ -49,11 +49,11 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("prever")
-    .setDescription("🔮 Vigilante tenta adivinhar se um vídeo vai bombar (não é garantia!)")
+    .setDescription("🔮 Vigilante tenta adivinhar se um vídeo ou canal vai bombar (não é garantia!)")
     .addStringOption((opt) =>
       opt
         .setName("link")
-        .setDescription("Link do vídeo para analisar")
+        .setDescription("Link do vídeo OU do canal (YouTube, TikTok, Instagram)")
         .setRequired(true)
     ),
 
@@ -157,26 +157,35 @@ function buildPrevisaoEmbed(p: PrevisaoResult): EmbedBuilder {
   const color = vai ? 0x00c853 : 0xff1744;
   const veredictoEmoji = vai ? "✅" : "❌";
   const veredictoTexto = vai ? "✅ VAI BOMBAR" : "❌ NÃO VAI BOMBAR";
+  const isCanal = p.tipo === "canal";
 
   const filled = Math.round(p.confianca / 10);
   const empty = 10 - filled;
   const bar = (vai ? "🟩" : "🟥").repeat(filled) + "⬛".repeat(empty);
 
-  const viewsStr = p.views >= 1_000_000
-    ? `${(p.views / 1_000_000).toFixed(1)}M`
-    : p.views >= 1_000
-    ? `${(p.views / 1_000).toFixed(0)}K`
-    : p.views > 0 ? `${p.views}` : "N/D";
+  const fmtN = (n: number) =>
+    n >= 1_000_000_000 ? `${(n / 1_000_000_000).toFixed(1)}B`
+    : n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M`
+    : n >= 1_000 ? `${(n / 1_000).toFixed(0)}K`
+    : n > 0 ? String(n) : "N/D";
 
   const favoraveis = p.pontosFavoraveis.map((f) => `✔ ${f}`).join("\n") || "—";
   const contra = p.pontosContra.map((c) => `✘ ${c}`).join("\n") || "—";
 
-  return new EmbedBuilder()
+  // Descrição diferente para canal vs vídeo
+  let descricao: string;
+  if (isCanal) {
+    const inscritos = p.inscritos ? fmtN(p.inscritos) : "N/D";
+    const mediaViews = fmtN(p.views);
+    descricao = `**📺 Canal: ${p.titulo}**\n👥 ${inscritos} inscritos · ${p.plataforma} · 👁️ ~${mediaViews} views/vídeo`;
+  } else {
+    descricao = `**🎬 ${p.titulo}**\n📺 \`${p.canal}\` · ${p.plataforma} · 👁️ ${fmtN(p.views)} views`;
+  }
+
+  const embed = new EmbedBuilder()
     .setColor(color)
     .setTitle(`🔮 PREVISÃO DO VIGILANTE — ${veredictoTexto}`)
-    .setDescription(
-      `**${p.titulo}**\n📺 \`${p.canal}\` · ${p.plataforma} · 👁️ ${viewsStr} views`
-    )
+    .setDescription(descricao)
     .addFields(
       {
         name: `${veredictoEmoji} Veredicto`,
@@ -206,13 +215,25 @@ function buildPrevisaoEmbed(p: PrevisaoResult): EmbedBuilder {
       {
         name: "⚠️ Aviso Importante",
         value:
-          "Este é apenas um **chute informado** do Vigilante baseado nos dados do vídeo. " +
+          `Este é apenas um **chute informado** do Vigilante baseado nos dados ${isCanal ? "do canal" : "do vídeo"}. ` +
           "Nenhum bot, IA ou pessoa consegue prever o futuro com 100% de certeza. " +
           "Use isso como referência, não como verdade absoluta.",
         inline: false,
       }
     )
     .setFooter({ text: "🔮 Vigilante Key · Previsão gerada por IA · Pode errar!" });
+
+  // Se for canal, adiciona os vídeos recentes analisados
+  if (isCanal && p.videosRecentes && p.videosRecentes.length > 0) {
+    const lista = p.videosRecentes.slice(0, 5).join("\n");
+    embed.addFields({
+      name: "🎬 Vídeos recentes analisados",
+      value: lista,
+      inline: false,
+    });
+  }
+
+  return embed;
 }
 
 // ─── /trending ────────────────────────────────────────────
