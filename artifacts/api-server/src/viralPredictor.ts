@@ -11,12 +11,13 @@ const openai = new OpenAI({
 });
 
 export interface PrevisaoResult {
-  tipo: "video" | "canal";
+  tipo: "video" | "canal" | "live";
   titulo: string;
   canal: string;
   plataforma: string;
   views: number;
   inscritos?: number;
+  concurrentViewers?: number;
   videosRecentes?: string[];
   veredicto: "VAI BOMBAR" | "NÃO VAI BOMBAR";
   confianca: number;
@@ -24,24 +25,22 @@ export interface PrevisaoResult {
   pontosFavoraveis: string[];
   pontosContra: string[];
   dicaMelhora: string;
+  sugestoesTitulos: string[];
+  sugestoesTags: string[];
+  dicaThumbnail: string;
 }
 
-// ─── Detecta se é canal ou vídeo ────────────────────────────
-
 function isChannelUrl(url: string): boolean {
-  // YouTube: /@handle, /channel/, /c/, /user/
   if (
-    url.includes("youtube.com/@") ||
-    url.includes("youtube.com/channel/") ||
-    url.includes("youtube.com/c/") ||
-    url.includes("youtube.com/user/")
-  ) {
-    // Garante que não é um vídeo
-    if (!url.includes("/watch") && !url.includes("/shorts/")) return true;
-  }
-  // TikTok: /@username sem /video/
+    (url.includes("youtube.com/@") ||
+      url.includes("youtube.com/channel/") ||
+      url.includes("youtube.com/c/") ||
+      url.includes("youtube.com/user/")) &&
+    !url.includes("/watch") &&
+    !url.includes("/shorts/") &&
+    !url.includes("/live")
+  ) return true;
   if (url.includes("tiktok.com/@") && !url.includes("/video/")) return true;
-  // Instagram: perfil (sem /p/ nem /reel/)
   if (
     url.includes("instagram.com/") &&
     !url.includes("/p/") &&
@@ -53,7 +52,8 @@ function isChannelUrl(url: string): boolean {
 
 function detectPlatform(url: string): string {
   if (url.includes("youtube.com") || url.includes("youtu.be")) {
-    return url.includes("/shorts/") ? "YouTube Shorts" : "YouTube";
+    if (url.includes("/shorts/")) return "YouTube Shorts";
+    return "YouTube";
   }
   if (url.includes("tiktok.com")) return "TikTok";
   if (url.includes("instagram.com")) return "Instagram";
@@ -67,11 +67,12 @@ function fmtNum(n: number): string {
   return n > 0 ? String(n) : "N/D";
 }
 
-// ─── Busca metadados de VÍDEO ────────────────────────────────
+// ─── Busca metadados de vídeo/live ──────────────────────────
 
 async function getVideoMeta(url: string) {
   const { stdout } = await execFileAsync("yt-dlp", [
-    "--print", "%(title)s\n%(channel)s\n%(view_count)s\n%(duration)s\n%(like_count)s",
+    "--print",
+    "%(title)s\n%(channel)s\n%(view_count)s\n%(duration)s\n%(like_count)s\n%(is_live)s\n%(concurrent_view_count)s\n%(channel_follower_count)s",
     "--no-download",
     "--extractor-args", "youtube:player_client=ios",
     "--no-warnings",
@@ -79,20 +80,26 @@ async function getVideoMeta(url: string) {
   ], { timeout: 30000 });
 
   const lines = stdout.trim().split("\n");
+  const isLive = lines[5]?.trim() === "True";
+  const concurrentViewers = parseInt(lines[6]) || 0;
+  const channelSubs = parseInt(lines[7]) || 0;
+
   return {
     title: lines[0] || "Sem título",
     channel: lines[1] || "Desconhecido",
     views: parseInt(lines[2]) || 0,
     duration: parseFloat(lines[3]) || 0,
     likeCount: parseInt(lines[4]) || 0,
+    isLive,
+    concurrentViewers,
+    channelSubs,
     platform: detectPlatform(url),
   };
 }
 
-// ─── Busca metadados de CANAL ────────────────────────────────
+// ─── Busca metadados de canal ────────────────────────────────
 
 async function getChannelMeta(url: string) {
-  // Pega info do canal + até 5 vídeos recentes
   const { stdout: infoOut } = await execFileAsync("yt-dlp", [
     "--print", "%(channel)s\n%(channel_follower_count)s",
     "--playlist-items", "1",
@@ -105,7 +112,6 @@ async function getChannelMeta(url: string) {
   const channelName = infoLines[0] || "Desconhecido";
   const subscribers = parseInt(infoLines[1]) || 0;
 
-  // Pega os 5 vídeos mais recentes com views
   let recentVideos: string[] = [];
   let totalViewsRecentes = 0;
   try {
@@ -127,79 +133,143 @@ async function getChannelMeta(url: string) {
       totalViewsRecentes += v;
       recentVideos.push(`"${title.trim()}" (${fmtNum(v)} views)`);
     }
-  } catch {
-    // ignora erro nos vídeos recentes
-  }
+  } catch { /* ignora */ }
 
-  const mediaViews = recentVideos.length > 0 ? Math.round(totalViewsRecentes / recentVideos.length) : 0;
+  const mediaViews = recentVideos.length > 0
+    ? Math.round(totalViewsRecentes / recentVideos.length)
+    : 0;
 
-  return {
-    channelName,
-    subscribers,
-    recentVideos,
-    mediaViews,
-    platform: detectPlatform(url),
-  };
+  return { channelName, subscribers, recentVideos, mediaViews, platform: detectPlatform(url) };
 }
 
-// ─── Previsão de VÍDEO ───────────────────────────────────────
+// ─── Geração da previsão via IA ──────────────────────────────
 
-async function preverVideo(url: string): Promise<PrevisaoResult> {
-  const meta = await getVideoMeta(url);
-  const duracaoStr = `${Math.floor(meta.duration / 60)}:${Math.floor(meta.duration % 60).toString().padStart(2, "0")}`;
+async function gerarPrevisao(contexto: string, nicho: string, isShorts = false): Promise<{
+  veredicto: "VAI BOMBAR" | "NÃO VAI BOMBAR";
+  confianca: number;
+  motivo: string;
+  pontosFavoraveis: string[];
+  pontosContra: string[];
+  dicaMelhora: string;
+  sugestoesTitulos: string[];
+  sugestoesTags: string[];
+  dicaThumbnail: string;
+}> {
+  const prompt = `Você é o VIGILANTE, sistema de análise de viralidade para criadores de conteúdo. Você é inteligente e realista — sabe que um canal com muitos inscritos tem credibilidade, que uma live com muitos espectadores simultâneos é um sinal MUITO positivo, e que views altos sempre indicam potencial.
 
-  const prompt = `Você é o VIGILANTE, sistema de análise de viralidade para criadores de conteúdo.
+${contexto}
 
-Analise este VÍDEO e preveja se ele tem potencial de BOMBAR:
-
-- Título: "${meta.title}"
-- Canal: ${meta.channel}
-- Plataforma: ${meta.platform}
-- Views: ${fmtNum(meta.views)}
-- Curtidas: ${meta.likeCount > 0 ? fmtNum(meta.likeCount) : "N/D"}
-- Duração: ${duracaoStr}
-
-Responda APENAS com JSON válido (sem markdown):
+Responda APENAS com JSON válido (sem markdown, sem explicação):
 
 {
   "veredicto": "VAI BOMBAR",
   "confianca": 72,
-  "motivo": "Explicação curta e direta (máx 2 frases)",
-  "pontosFavoraveis": ["ponto 1", "ponto 2", "ponto 3"],
-  "pontosContra": ["ponto 1", "ponto 2"],
-  "dicaMelhora": "Uma dica concreta para aumentar as chances de viralizar"
+  "motivo": "Explicação objetiva de 2 frases sobre o potencial",
+  "pontosFavoraveis": ["ponto concreto 1", "ponto concreto 2", "ponto concreto 3"],
+  "pontosContra": ["ponto concreto 1", "ponto concreto 2"],
+  "dicaMelhora": "Dica concreta e específica para aumentar as chances",
+  "sugestoesTitulos": [
+    "Título sugerido 1 (chamativo e otimizado)",
+    "Título sugerido 2",
+    "Título sugerido 3"
+  ],
+  "sugestoesTags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
+  "dicaThumbnail": "dica aqui"
 }
 
-Regras:
+Regras OBRIGATÓRIAS:
 - veredicto: "VAI BOMBAR" ou "NÃO VAI BOMBAR"
-- confianca: 10 a 90 (NUNCA 100, NUNCA 0)
-- pontosFavoraveis: 2 a 4 pontos reais
-- pontosContra: 1 a 3 pontos reais`;
+- confianca: NUNCA pode ser 100, NUNCA pode ser 0. Máximo 89, mínimo 11
+- Live com 4K+ espectadores simultâneos = sinal MUITO positivo → tende a VAI BOMBAR
+- Canal com muitos inscritos = credibilidade já estabelecida → ponto favorável
+- Views muito acima da média do nicho = sinal forte de viralidade
+- pontosFavoraveis: 2 a 4 pontos, baseados nos DADOS REAIS fornecidos
+- pontosContra: 1 a 3 pontos REAIS, não invente problemas que não existem
+- sugestoesTitulos: 3 títulos criativos e otimizados para o nicho "${nicho}"
+- sugestoesTags: 5 tags relevantes para o nicho
+${isShorts
+  ? '- dicaThumbnail: coloque EXATAMENTE "SHORTS_SEM_THUMBNAIL" — Shorts não tem thumbnail personalizada'
+  : "- dicaThumbnail: dica visual específica e prática para uma thumbnail chamativa"}`;
 
   const response = await openai.chat.completions.create({
     model: "gpt-5.2",
     messages: [{ role: "user", content: prompt }],
-    max_completion_tokens: 800,
+    max_completion_tokens: 1200,
   });
 
-  const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
+  const content = response.choices[0]?.message?.content || "";
+  const parsed = JSON.parse(content);
 
   return {
-    tipo: "video",
+    veredicto: parsed.veredicto,
+    confianca: Math.min(89, Math.max(11, Number(parsed.confianca))),
+    motivo: parsed.motivo || "",
+    pontosFavoraveis: parsed.pontosFavoraveis || [],
+    pontosContra: parsed.pontosContra || [],
+    dicaMelhora: parsed.dicaMelhora || "",
+    sugestoesTitulos: parsed.sugestoesTitulos || [],
+    sugestoesTags: parsed.sugestoesTags || [],
+    dicaThumbnail: parsed.dicaThumbnail || "",
+  };
+}
+
+// ─── Prever VÍDEO ou LIVE ────────────────────────────────────
+
+async function preverVideo(url: string): Promise<PrevisaoResult> {
+  const meta = await getVideoMeta(url);
+  const duracaoStr = `${Math.floor(meta.duration / 60)}:${Math.floor(meta.duration % 60).toString().padStart(2, "0")}`;
+  const tipo: "video" | "live" = meta.isLive ? "live" : "video";
+
+  let contexto: string;
+  if (meta.isLive) {
+    contexto = `Analise esta LIVE ao vivo e preveja se ela tem potencial de explodir:
+
+- Título da live: "${meta.title}"
+- Canal: ${meta.channel}
+- Inscritos do canal: ${fmtNum(meta.channelSubs)}
+- Plataforma: ${meta.platform}
+- Espectadores simultâneos AGORA: ${fmtNum(meta.concurrentViewers)}
+- Views totais acumulados: ${fmtNum(meta.views)}
+- Curtidas: ${meta.likeCount > 0 ? fmtNum(meta.likeCount) : "N/D"}
+
+CONTEXTO IMPORTANTE: ${meta.concurrentViewers >= 1000 ? `${fmtNum(meta.concurrentViewers)} espectadores simultâneos é um número expressivo e indica alto engajamento.` : "A live está em andamento."} ${meta.channelSubs > 10000 ? `O canal já tem ${fmtNum(meta.channelSubs)} inscritos, o que é uma base sólida.` : ""}`;
+  } else {
+    contexto = `Analise este VÍDEO e preveja se ele tem potencial de BOMBAR:
+
+- Título: "${meta.title}"
+- Canal: ${meta.channel}
+- Inscritos do canal: ${fmtNum(meta.channelSubs)}
+- Plataforma: ${meta.platform}
+- Views atuais: ${fmtNum(meta.views)}
+- Curtidas: ${meta.likeCount > 0 ? fmtNum(meta.likeCount) : "N/D"}
+- Duração: ${duracaoStr}`;
+  }
+
+  const nicho = meta.title;
+  const isShorts = meta.platform === "YouTube Shorts";
+  const ai = await gerarPrevisao(contexto, nicho, isShorts);
+
+  return {
+    tipo,
     titulo: meta.title,
     canal: meta.channel,
     plataforma: meta.platform,
     views: meta.views,
-    veredicto: parsed.veredicto,
-    confianca: Math.min(90, Math.max(10, parsed.confianca)),
-    motivo: parsed.motivo,
-    pontosFavoraveis: parsed.pontosFavoraveis || [],
-    pontosContra: parsed.pontosContra || [],
-    dicaMelhora: parsed.dicaMelhora || "",
+    inscritos: meta.channelSubs || undefined,
+    concurrentViewers: meta.isLive ? meta.concurrentViewers : undefined,
+    veredicto: ai.veredicto,
+    confianca: ai.confianca,
+    motivo: ai.motivo,
+    pontosFavoraveis: ai.pontosFavoraveis,
+    pontosContra: ai.pontosContra,
+    dicaMelhora: ai.dicaMelhora,
+    sugestoesTitulos: ai.sugestoesTitulos,
+    sugestoesTags: ai.sugestoesTags,
+    dicaThumbnail: ai.dicaThumbnail,
   };
 }
 
-// ─── Previsão de CANAL ───────────────────────────────────────
+// ─── Prever CANAL ────────────────────────────────────────────
 
 async function preverCanal(url: string): Promise<PrevisaoResult> {
   const meta = await getChannelMeta(url);
@@ -208,43 +278,22 @@ async function preverCanal(url: string): Promise<PrevisaoResult> {
     ? meta.recentVideos.map((v, i) => `${i + 1}. ${v}`).join("\n")
     : "Sem dados de vídeos recentes";
 
-  const prompt = `Você é o VIGILANTE, sistema de análise de viralidade para criadores de conteúdo.
+  const engajamento = meta.subscribers > 0 && meta.mediaViews > 0
+    ? ((meta.mediaViews / meta.subscribers) * 100).toFixed(1)
+    : null;
 
-Analise este CANAL e preveja se ele tem potencial de BOMBAR (explodir em inscritos e views):
+  const contexto = `Analise este CANAL e preveja se ele tem potencial de EXPLODIR (crescer muito em inscritos e views):
 
 - Nome do Canal: ${meta.channelName}
 - Plataforma: ${meta.platform}
 - Inscritos: ${fmtNum(meta.subscribers)}
-- Média de views nos vídeos recentes: ${fmtNum(meta.mediaViews)}
+- Média de views por vídeo: ${fmtNum(meta.mediaViews)}${engajamento ? `\n- Taxa de engajamento (views/inscritos): ${engajamento}%` : ""}
 - Vídeos recentes:
 ${videosStr}
 
-Responda APENAS com JSON válido (sem markdown):
+CONTEXTO IMPORTANTE: ${meta.subscribers > 100000 ? `Canal com ${fmtNum(meta.subscribers)} inscritos já tem credibilidade estabelecida.` : ""} ${meta.mediaViews > meta.subscribers ? "A média de views SUPERA os inscritos — sinal MUITO POSITIVO de viralidade." : ""}`;
 
-{
-  "veredicto": "VAI BOMBAR",
-  "confianca": 68,
-  "motivo": "Explicação curta e direta sobre o potencial do canal (máx 2 frases)",
-  "pontosFavoraveis": ["ponto 1", "ponto 2", "ponto 3"],
-  "pontosContra": ["ponto 1", "ponto 2"],
-  "dicaMelhora": "Uma dica concreta para o canal crescer mais rápido"
-}
-
-Regras:
-- veredicto: "VAI BOMBAR" ou "NÃO VAI BOMBAR"
-- confianca: 10 a 90 (NUNCA 100, NUNCA 0)
-- Analise consistência dos vídeos, média de views vs inscritos, frequência
-- Se média de views supera inscritos, é sinal muito positivo
-- pontosFavoraveis: 2 a 4 pontos reais sobre o canal
-- pontosContra: 1 a 3 pontos reais`;
-
-  const response = await openai.chat.completions.create({
-    model: "gpt-5.2",
-    messages: [{ role: "user", content: prompt }],
-    max_completion_tokens: 800,
-  });
-
-  const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
+  const ai = await gerarPrevisao(contexto, meta.channelName);
 
   return {
     tipo: "canal",
@@ -254,12 +303,15 @@ Regras:
     views: meta.mediaViews,
     inscritos: meta.subscribers,
     videosRecentes: meta.recentVideos,
-    veredicto: parsed.veredicto,
-    confianca: Math.min(90, Math.max(10, parsed.confianca)),
-    motivo: parsed.motivo,
-    pontosFavoraveis: parsed.pontosFavoraveis || [],
-    pontosContra: parsed.pontosContra || [],
-    dicaMelhora: parsed.dicaMelhora || "",
+    veredicto: ai.veredicto,
+    confianca: ai.confianca,
+    motivo: ai.motivo,
+    pontosFavoraveis: ai.pontosFavoraveis,
+    pontosContra: ai.pontosContra,
+    dicaMelhora: ai.dicaMelhora,
+    sugestoesTitulos: ai.sugestoesTitulos,
+    sugestoesTags: ai.sugestoesTags,
+    dicaThumbnail: ai.dicaThumbnail,
   };
 }
 
@@ -267,12 +319,10 @@ Regras:
 
 export async function preverViral(url: string): Promise<PrevisaoResult> {
   try {
-    if (isChannelUrl(url)) {
-      return await preverCanal(url);
-    }
+    if (isChannelUrl(url)) return await preverCanal(url);
     return await preverVideo(url);
   } catch (err) {
     logger.error({ err }, "Erro na previsão");
-    throw new Error("Não consegui analisar este link. Verifique se é um vídeo ou canal válido.");
+    throw new Error("Não consegui analisar este link. Verifique se é um vídeo, live ou canal válido.");
   }
 }

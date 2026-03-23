@@ -154,10 +154,13 @@ function buildVideoResponse(result: Awaited<ReturnType<typeof analyzeVideo>>): s
 
 function buildPrevisaoEmbed(p: PrevisaoResult): EmbedBuilder {
   const vai = p.veredicto === "VAI BOMBAR";
-  const color = vai ? 0x00c853 : 0xff1744;
-  const veredictoEmoji = vai ? "✅" : "❌";
-  const veredictoTexto = vai ? "✅ VAI BOMBAR" : "❌ NÃO VAI BOMBAR";
   const isCanal = p.tipo === "canal";
+  const isLive = p.tipo === "live";
+  const isShorts = p.plataforma === "YouTube Shorts";
+
+  const color = isLive ? 0x9c27b0 : vai ? 0x00c853 : 0xff1744;
+  const veredictoTexto = vai ? "✅ VAI BOMBAR" : "❌ NÃO VAI BOMBAR";
+  const veredictoEmoji = vai ? "✅" : "❌";
 
   const filled = Math.round(p.confianca / 10);
   const empty = 10 - filled;
@@ -172,15 +175,21 @@ function buildPrevisaoEmbed(p: PrevisaoResult): EmbedBuilder {
   const favoraveis = p.pontosFavoraveis.map((f) => `✔ ${f}`).join("\n") || "—";
   const contra = p.pontosContra.map((c) => `✘ ${c}`).join("\n") || "—";
 
-  // Descrição diferente para canal vs vídeo
+  // Cabeçalho da descrição conforme tipo
   let descricao: string;
-  if (isCanal) {
+  if (isLive) {
+    const viewers = p.concurrentViewers ? fmtN(p.concurrentViewers) : "N/D";
     const inscritos = p.inscritos ? fmtN(p.inscritos) : "N/D";
-    const mediaViews = fmtN(p.views);
-    descricao = `**📺 Canal: ${p.titulo}**\n👥 ${inscritos} inscritos · ${p.plataforma} · 👁️ ~${mediaViews} views/vídeo`;
+    descricao = `**🔴 LIVE: ${p.titulo}**\n📺 \`${p.canal}\` · ${p.plataforma} · 👥 ${inscritos} inscritos\n🟢 **${viewers} espectadores ao vivo agora**`;
+  } else if (isCanal) {
+    const inscritos = p.inscritos ? fmtN(p.inscritos) : "N/D";
+    descricao = `**📺 Canal: ${p.titulo}**\n👥 ${inscritos} inscritos · ${p.plataforma} · 👁️ ~${fmtN(p.views)} views/vídeo`;
   } else {
-    descricao = `**🎬 ${p.titulo}**\n📺 \`${p.canal}\` · ${p.plataforma} · 👁️ ${fmtN(p.views)} views`;
+    const tipoEmoji = isShorts ? "🩳" : "🎬";
+    descricao = `**${tipoEmoji} ${p.titulo}**\n📺 \`${p.canal}\` · ${p.plataforma} · 👁️ ${fmtN(p.views)} views`;
   }
+
+  const tipoTexto = isLive ? "da live" : isCanal ? "do canal" : "do vídeo";
 
   const embed = new EmbedBuilder()
     .setColor(color)
@@ -211,27 +220,56 @@ function buildPrevisaoEmbed(p: PrevisaoResult): EmbedBuilder {
         name: "💡 Como melhorar as chances",
         value: `> ${p.dicaMelhora}`,
         inline: false,
-      },
-      {
-        name: "⚠️ Aviso Importante",
-        value:
-          `Este é apenas um **chute informado** do Vigilante baseado nos dados ${isCanal ? "do canal" : "do vídeo"}. ` +
-          "Nenhum bot, IA ou pessoa consegue prever o futuro com 100% de certeza. " +
-          "Use isso como referência, não como verdade absoluta.",
-        inline: false,
       }
-    )
-    .setFooter({ text: "🔮 Vigilante Key · Previsão gerada por IA · Pode errar!" });
+    );
 
-  // Se for canal, adiciona os vídeos recentes analisados
-  if (isCanal && p.videosRecentes && p.videosRecentes.length > 0) {
-    const lista = p.videosRecentes.slice(0, 5).join("\n");
+  // Sugestões de títulos (com aviso)
+  if (p.sugestoesTitulos && p.sugestoesTitulos.length > 0) {
+    const titulos = p.sugestoesTitulos.map((t, i) => `${i + 1}. ${t}`).join("\n");
     embed.addFields({
-      name: "🎬 Vídeos recentes analisados",
-      value: lista,
+      name: "✍️ Sugestões de Títulos",
+      value: titulos + "\n*⚠️ Sugestões do robô — não garantem viralização*",
       inline: false,
     });
   }
+
+  // Tags (com aviso)
+  if (p.sugestoesTags && p.sugestoesTags.length > 0) {
+    embed.addFields({
+      name: "🏷️ Tags Sugeridas",
+      value: p.sugestoesTags.map((t) => `\`${t}\``).join(" ") + "\n*⚠️ Sugestões do robô*",
+      inline: false,
+    });
+  }
+
+  // Thumbnail — NUNCA para Shorts
+  if (!isShorts && p.dicaThumbnail && p.dicaThumbnail !== "SHORTS_SEM_THUMBNAIL") {
+    embed.addFields({
+      name: "🖼️ Dica de Thumbnail",
+      value: `> ${p.dicaThumbnail}\n*⚠️ Sugestão do robô — resultados podem variar*`,
+      inline: false,
+    });
+  }
+
+  // Vídeos recentes analisados (só para canal)
+  if (isCanal && p.videosRecentes && p.videosRecentes.length > 0) {
+    embed.addFields({
+      name: "🎬 Vídeos recentes analisados",
+      value: p.videosRecentes.slice(0, 5).join("\n"),
+      inline: false,
+    });
+  }
+
+  embed.addFields({
+    name: "⚠️ Aviso do Robô",
+    value:
+      `Eu sou um robô e posso errar. Esta é apenas uma análise baseada nos dados ${tipoTexto}. ` +
+      "**Nenhum bot ou IA consegue prever o futuro com 100% de certeza.** " +
+      "Use como referência, nunca como garantia.",
+    inline: false,
+  });
+
+  embed.setFooter({ text: "🔮 Vigilante Key · Previsão gerada por IA · Pode errar!" });
 
   return embed;
 }
