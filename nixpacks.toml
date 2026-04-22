@@ -2,7 +2,7 @@
 # Garante Node 24 (necessário pro node:sqlite), pnpm, ffmpeg e yt-dlp
 
 [phases.setup]
-nixPkgs = ["nodejs_24", "pnpm", "ffmpeg-full", "yt-dlp", "python3"]
+nixPkgs = ["nodejs_22", "pnpm", "ffmpeg-full", "yt-dlp", "python3"]
 
 [phases.install]
 cmds = ["corepack enable", "pnpm install --frozen-lockfile"]
