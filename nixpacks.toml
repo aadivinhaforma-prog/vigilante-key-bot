@@ -5,7 +5,7 @@
 nixPkgs = ["nodejs_22", "pnpm", "ffmpeg-full", "yt-dlp", "python3"]
 
 [phases.install]
-cmds = ["corepack enable", "pnpm install --frozen-lockfile"]
+cmds = ["corepack enable", "pnpm install"]
 
 [phases.build]
 cmds = ["pnpm run build"]
