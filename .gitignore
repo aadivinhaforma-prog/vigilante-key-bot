@@ -47,3 +47,22 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+.upm/
+.replit.local
+
+# Variáveis de ambiente / segredos — NUNCA commitar
+.env
+.env.*
+!.env.example
+
+# Banco SQLite local do Vigilante Key (Railway usa Volume)
+artifacts/api-server/data/
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+/tmp/logs/

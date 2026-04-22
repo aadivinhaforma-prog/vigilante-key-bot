@@ -1,0 +1,14 @@
+# Configuração Nixpacks para Railway
+# Garante Node 24 (necessário pro node:sqlite), pnpm, ffmpeg e yt-dlp
+
+[phases.setup]
+nixPkgs = ["nodejs_24", "pnpm", "ffmpeg-full", "yt-dlp", "python3"]
+
+[phases.install]
+cmds = ["corepack enable", "pnpm install --frozen-lockfile"]
+
+[phases.build]
+cmds = ["pnpm run build"]
+
+[start]
+cmd = "pnpm --filter @workspace/api-server run start"
