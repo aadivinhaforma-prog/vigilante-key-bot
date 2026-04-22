@@ -7,6 +7,8 @@ import FormData from "form-data";
 import axios from "axios";
 import OpenAI from "openai";
 import { logger } from "./lib/logger";
+import { aplicarWatermark } from "./lib/watermark";
+import { retry, classificarErroDownload } from "./lib/safety";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,15 +36,25 @@ export interface VideoInfo {
   platform: string;
   url: string;
   isShort: boolean;
+  isLive: boolean;
   fileSize?: number;
   views: number;
+  channelSubs: number;
+  thumbnail?: string;
+  uploaderHandle: string;
 }
 
 export interface AnalysisResult {
   videoInfo: VideoInfo;
   music: MusicResult[];
   transcript: string;
-  videoFilePath?: string;
+}
+
+export class VideoValidationError extends Error {
+  constructor(public mensagem: string) {
+    super(mensagem);
+    this.name = "VideoValidationError";
+  }
 }
 
 function detectPlatform(url: string): string {
@@ -61,13 +73,15 @@ function formatDuration(seconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-async function getVideoInfo(url: string): Promise<VideoInfo> {
-  const { stdout } = await execFileAsync("yt-dlp", [
+export async function getVideoInfo(url: string): Promise<VideoInfo> {
+  const { stdout } = await retry(() => execFileAsync("yt-dlp", [
     "--print",
-    "%(title)s\n%(duration)s\n%(uploader)s\n%(filesize_approx)s\n%(view_count)s",
+    "%(title)s\n%(duration)s\n%(uploader)s\n%(filesize_approx)s\n%(view_count)s\n%(is_live)s\n%(channel_follower_count)s\n%(thumbnail)s\n%(uploader_id)s",
     "--no-download",
+    "--no-warnings",
+    "--extractor-args", "youtube:player_client=ios",
     url,
-  ]);
+  ], { timeout: 30000 }));
 
   const lines = stdout.trim().split("\n");
   const title = lines[0] || "Sem título";
@@ -75,53 +89,33 @@ async function getVideoInfo(url: string): Promise<VideoInfo> {
   const uploader = lines[2] || "Desconhecido";
   const fileSize = parseFloat(lines[3]) || 0;
   const views = parseInt(lines[4]) || 0;
+  const isLive = lines[5]?.trim() === "True";
+  const channelSubs = parseInt(lines[6]) || 0;
+  const thumbnail = lines[7] || undefined;
+  const uploaderHandle = (lines[8] || uploader).replace(/^@/, "");
   const platform = detectPlatform(url);
   const isShort = duration <= 180;
 
-  return { title, duration, uploader, platform, url, isShort, fileSize, views };
+  return { title, duration, uploader, platform, url, isShort, isLive, fileSize, views, channelSubs, thumbnail, uploaderHandle };
 }
 
-async function downloadVideoFile(url: string, outputPath: string): Promise<string | null> {
-  const template = outputPath.replace(".mp4", ".%(ext)s");
-
-  const attempts = [
-    // Tentativa 1: cliente iOS do YouTube (bypassa SABR)
-    [
-      "--extractor-args", "youtube:player_client=ios",
-      "-f", "best[ext=mp4]/best",
-      "--max-filesize", "24M",
-      "-o", template, url,
-    ],
-    // Tentativa 2: cliente mweb
-    [
-      "--extractor-args", "youtube:player_client=mweb",
-      "-f", "best[ext=mp4]/best",
-      "--max-filesize", "24M",
-      "-o", template, url,
-    ],
-    // Tentativa 3: sem restrição de formato
-    [
-      "--extractor-args", "youtube:player_client=ios",
-      "--max-filesize", "24M",
-      "-o", template, url,
-    ],
-  ];
-
-  for (const args of attempts) {
-    try {
-      await execFileAsync("yt-dlp", args);
-      break;
-    } catch {
-      // tenta próximo
-    }
+/**
+ * Valida se um vídeo pode ser BAIXADO (regras dos itens 14, 15, 20, 21, 35).
+ * Lança VideoValidationError com mensagem amigável.
+ */
+export function validarParaDownload(info: VideoInfo): void {
+  if (info.isLive) {
+    throw new VideoValidationError("❌ Não baixo transmissões ao vivo. Tente quando o vídeo estiver gravado.");
   }
-
-  // yt-dlp pode mudar a extensão — procura o arquivo gerado
-  const dir = path.dirname(outputPath);
-  const base = path.basename(outputPath, ".mp4");
-  const files = fs.readdirSync(dir).filter((f) => f.startsWith(base));
-  if (files.length === 0) return null;
-  return path.join(dir, files[0]);
+  if (info.duration > 0 && info.duration < 3) {
+    throw new VideoValidationError("❌ Vídeo muito curto (menos de 3 segundos). Não é possível baixar.");
+  }
+  if (info.duration > 600) {
+    throw new VideoValidationError("❌ Vídeo acima de 10 minutos. Por segurança, só baixo vídeos curtos.");
+  }
+  if (info.channelSubs > 0 && info.channelSubs < 100) {
+    throw new VideoValidationError("❌ Não baixo vídeos de criadores com menos de 100 inscritos. Isso protege pequenos criadores.");
+  }
 }
 
 async function downloadAudio(url: string, outputPath: string): Promise<void> {
@@ -129,15 +123,18 @@ async function downloadAudio(url: string, outputPath: string): Promise<void> {
     [
       "--extractor-args", "youtube:player_client=ios",
       "-x", "--audio-format", "mp3", "--audio-quality", "0",
+      "--no-warnings",
       "-o", outputPath, url,
     ],
     [
       "--extractor-args", "youtube:player_client=mweb",
       "-x", "--audio-format", "mp3", "--audio-quality", "0",
+      "--no-warnings",
       "-o", outputPath, url,
     ],
     [
       "-x", "--audio-format", "mp3", "--audio-quality", "0",
+      "--no-warnings",
       "-o", outputPath, url,
     ],
   ];
@@ -145,7 +142,7 @@ async function downloadAudio(url: string, outputPath: string): Promise<void> {
   let lastErr: unknown;
   for (const args of attempts) {
     try {
-      await execFileAsync("yt-dlp", args);
+      await execFileAsync("yt-dlp", args, { timeout: 90000 });
       return;
     } catch (err) {
       lastErr = err;
@@ -154,12 +151,8 @@ async function downloadAudio(url: string, outputPath: string): Promise<void> {
   throw lastErr;
 }
 
-async function detectMusicInSegment(
-  audioPath: string,
-  offsetSeconds: number
-): Promise<MusicResult | null> {
+async function detectMusicInSegment(audioPath: string, offsetSeconds: number): Promise<MusicResult | null> {
   if (!AUDD_API_KEY) return null;
-
   try {
     const formData = new FormData();
     formData.append("api_token", AUDD_API_KEY);
@@ -192,32 +185,17 @@ async function detectMusicInSegment(
   }
 }
 
-async function extractSegment(
-  audioPath: string,
-  startSeconds: number,
-  durationSeconds: number,
-  outputPath: string
-): Promise<void> {
+async function extractSegment(audioPath: string, startSeconds: number, durationSeconds: number, outputPath: string): Promise<void> {
   await execFileAsync("ffmpeg", [
-    "-i",
-    audioPath,
-    "-ss",
-    String(startSeconds),
-    "-t",
-    String(durationSeconds),
-    "-ar",
-    "44100",
-    "-ac",
-    "1",
-    "-y",
+    "-i", audioPath,
+    "-ss", String(startSeconds),
+    "-t", String(durationSeconds),
+    "-ar", "44100", "-ac", "1", "-y",
     outputPath,
   ]);
 }
 
-async function detectAllMusic(
-  audioPath: string,
-  videoDuration: number
-): Promise<MusicResult[]> {
+async function detectAllMusic(audioPath: string, videoDuration: number): Promise<MusicResult[]> {
   const results: MusicResult[] = [];
   const seen = new Set<string>();
   const segmentDuration = 30;
@@ -232,9 +210,8 @@ async function detectAllMusic(
   }
 
   const tmpDir = os.tmpdir();
-
   for (const offset of checkPoints) {
-    const segPath = path.join(tmpDir, `seg_${offset}.mp3`);
+    const segPath = path.join(tmpDir, `seg_${offset}_${Date.now()}.mp3`);
     try {
       await extractSegment(audioPath, offset, segmentDuration, segPath);
       const music = await detectMusicInSegment(segPath, offset);
@@ -245,12 +222,11 @@ async function detectAllMusic(
           results.push(music);
         }
       }
-    } catch {
-    } finally {
+    } catch { /* segue */ }
+    finally {
       if (fs.existsSync(segPath)) fs.unlinkSync(segPath);
     }
   }
-
   return results;
 }
 
@@ -258,13 +234,11 @@ async function transcribeAudio(audioPath: string): Promise<string> {
   try {
     const audioBuffer = fs.readFileSync(audioPath);
     const file = new File([audioBuffer], "audio.mp3", { type: "audio/mpeg" });
-
     const response = await openai.audio.transcriptions.create({
       model: "gpt-4o-mini-transcribe",
       file,
       response_format: "json",
     });
-
     return (response as { text: string }).text || "";
   } catch (err) {
     logger.error({ err }, "Erro ao transcrever áudio");
@@ -272,43 +246,80 @@ async function transcribeAudio(audioPath: string): Promise<string> {
   }
 }
 
-export async function analyzeVideo(url: string): Promise<AnalysisResult> {
+/** Análise de áudio: música + transcrição. NÃO baixa vídeo. */
+export async function analyzeVideo(url: string, videoInfo?: VideoInfo): Promise<AnalysisResult> {
+  const info = videoInfo ?? await getVideoInfo(url);
   const tmpDir = os.tmpdir();
-  const sessionId = Date.now();
-  const audioPath = path.join(tmpDir, `audio_${sessionId}.mp3`);
-  const videoPath = path.join(tmpDir, `video_${sessionId}.mp4`);
+  const audioPath = path.join(tmpDir, `audio_${Date.now()}.mp3`);
 
   try {
-    const videoInfo = await getVideoInfo(url);
-
-    await downloadAudio(url, audioPath);
-
+    await retry(() => downloadAudio(url, audioPath));
     const [music, transcript] = await Promise.all([
-      detectAllMusic(audioPath, videoInfo.duration),
+      detectAllMusic(audioPath, info.duration),
       transcribeAudio(audioPath),
     ]);
-
-    let videoFilePath: string | undefined;
-    try {
-      const downloaded = await downloadVideoFile(url, videoPath);
-      if (downloaded && fs.existsSync(downloaded)) {
-        const stat = fs.statSync(downloaded);
-        if (stat.size <= 25 * 1024 * 1024) {
-          videoFilePath = downloaded;
-          logger.info({ size: stat.size, path: downloaded }, "Vídeo baixado para envio no Discord");
-        } else {
-          fs.unlinkSync(downloaded);
-          logger.info({ size: stat.size }, "Vídeo muito grande para enviar no Discord (>25MB)");
-        }
-      }
-    } catch (err) {
-      logger.warn({ err }, "Não foi possível baixar o vídeo para envio");
-    }
-
-    return { videoInfo, music, transcript, videoFilePath };
+    return { videoInfo: info, music, transcript };
+  } catch (err) {
+    throw new Error(classificarErroDownload(err));
   } finally {
     if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
   }
+}
+
+/**
+ * Baixa o arquivo do vídeo, aplica marca d'água, e retorna o caminho.
+ * Lança erro se falhar (incluindo se watermark falhar — protege criador).
+ */
+export async function downloadVideoComWatermark(url: string, info: VideoInfo): Promise<string> {
+  validarParaDownload(info);
+
+  const tmpDir = os.tmpdir();
+  const sessionId = Date.now();
+  const videoPath = path.join(tmpDir, `video_${sessionId}.mp4`);
+  const template = videoPath.replace(".mp4", ".%(ext)s");
+
+  const attempts = [
+    ["--extractor-args", "youtube:player_client=ios", "-f", "best[ext=mp4]/best", "--max-filesize", "24M", "--no-warnings", "-o", template, url],
+    ["--extractor-args", "youtube:player_client=mweb", "-f", "best[ext=mp4]/best", "--max-filesize", "24M", "--no-warnings", "-o", template, url],
+    ["--extractor-args", "youtube:player_client=ios", "--max-filesize", "24M", "--no-warnings", "-o", template, url],
+  ];
+
+  let downloaded = false;
+  let lastErr: unknown;
+  for (const args of attempts) {
+    try {
+      await execFileAsync("yt-dlp", args, { timeout: 90000 });
+      downloaded = true;
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  if (!downloaded) throw new Error(classificarErroDownload(lastErr));
+
+  const dir = path.dirname(videoPath);
+  const base = path.basename(videoPath, ".mp4");
+  const files = fs.readdirSync(dir).filter((f) => f.startsWith(base));
+  if (files.length === 0) throw new Error("❌ Não encontrei o arquivo após o download.");
+  const arquivoBaixado = path.join(dir, files[0]);
+
+  // Verifica tamanho (item 17)
+  const stat = fs.statSync(arquivoBaixado);
+  if (stat.size > 25 * 1024 * 1024) {
+    fs.unlinkSync(arquivoBaixado);
+    throw new Error("❌ Vídeo acima de 25MB — limite do Discord. Te mando só o link.");
+  }
+
+  // Aplica watermark — se falhar, lança erro e cancela envio (item 16)
+  try {
+    await aplicarWatermark(arquivoBaixado, info.uploaderHandle);
+  } catch (err) {
+    try { fs.unlinkSync(arquivoBaixado); } catch { /* ignora */ }
+    throw err;
+  }
+
+  return arquivoBaixado;
 }
 
 export { formatDuration };

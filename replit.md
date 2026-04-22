@@ -52,15 +52,52 @@ Every package extends `tsconfig.base.json` which sets `composite: true`. The roo
 
 ### `artifacts/api-server` (`@workspace/api-server`)
 
-Express 5 API server. Routes live in `src/routes/` and use `@workspace/api-zod` for request and response validation and `@workspace/db` for persistence.
+Express 5 API server **+ Vigilante Key Discord bot** rodando juntos no mesmo processo.
 
-- Entry: `src/index.ts` — reads `PORT`, starts Express
-- App setup: `src/app.ts` — mounts CORS, JSON/urlencoded parsing, routes at `/api`
-- Routes: `src/routes/index.ts` mounts sub-routers; `src/routes/health.ts` exposes `GET /health` (full path: `/api/health`)
-- Depends on: `@workspace/db`, `@workspace/api-zod`
-- `pnpm --filter @workspace/api-server run dev` — run the dev server
-- `pnpm --filter @workspace/api-server run build` — production esbuild bundle (`dist/index.cjs`)
-- Build bundles an allowlist of deps (express, cors, pg, drizzle-orm, zod, etc.) and externalizes the rest
+**Bot Discord — Vigilante Key**
+
+- Tag: `Vigilante Key#9288`. Owner: `1467333025430900860`. Sempre responde PT-BR informal.
+- Entry: `src/index.ts` — auto-atualiza `yt-dlp`, sobe Express + bot.
+- Bot: `src/bot.ts` — registra 13 comandos slash globais e roteia interações.
+- Análise de vídeo: `src/videoAnalyzer.ts` (yt-dlp + AudD para música + OpenAI Whisper para transcrição + ffmpeg drawtext para watermark).
+- Previsão viral: `src/viralPredictor.ts` (vídeo, canal e live).
+- Trending: `src/trendingAnalyzer.ts`.
+
+**Storage** — SQLite embutido (`node:sqlite` nativo do Node 24, sem builds nativas).
+DB em `data/vigilante.db`. Schema definido em `src/lib/db.ts`.
+
+**Módulos da lógica de negócio (src/lib/)**
+
+- `db.ts` — schema completo, `ensureUser`, `getSistema/setSistema`, `isManutencao`.
+- `permissions.ts` — `isOwner`, `isBotAdmin`, `isServerAdmin`.
+- `safety.ts` — limpeza de URL, validação, anti-spam (5s + 5/min → bloqueio 10min), filtro de conteúdo proibido, classificação de erros, retry, limite diário/criador, bloqueios.
+- `eventos.ts` — calendário automático (Páscoa/Carnaval calculados, Natal, Halloween, Dia da Mentira que mente, etc.) + eventos manuais.
+- `fichas.ts` — sistema de tokens com VIP, fidelidade 30 dias, eventos.
+- `watermark.ts` — drawtext ffmpeg com `@criador`. Falha = vídeo NÃO é enviado (regra obrigatória).
+- `troll.ts` — 15 efeitos de trollagem (mudo, lento, mini, idioma, etc.).
+- `historico.ts` — top virais, ranking mensal, conquistas.
+- `acoes.ts` — registro/desfazer de ações de admin/owner por 24h.
+- `servidor.ts` — config por guild (canal permitido, limite, destino, bloqueios).
+
+**Comandos slash registrados**
+
+Usuário: `/video`, `/prever`, `/trending`, `/fichas`, `/perfil`, `/historico`, `/top`, `/ranking`, `/ajuda`.
+
+Admin de servidor: `/adm <subcommand>` (banir, desbanir, fichas, resetar, canal, log, limite, status, destino, bloquear/desbloquear-criador/video, lista-bloqueios, desfazer) + `/ajuda-adm`.
+
+Owner do bot: `/owner <group> <subcommand>` agrupados em `admin`, `geral`, `fichas`, `vip`, `troll`, `servidor`, `bloqueio`, `evento`, `sistema` + `/ajuda-owner`.
+
+**Secrets necessários**: `DISCORD_BOT_TOKEN`, `AUDD_API_KEY`, `AI_INTEGRATIONS_OPENAI_BASE_URL`, `AI_INTEGRATIONS_OPENAI_API_KEY`. Opcional: `DISCORD_CLIENT_ID` (cai no client.user.id se não definido).
+
+**Dependências do sistema**: `yt-dlp` e `ffmpeg` precisam estar disponíveis no PATH.
+
+**Express API** — Routes em `src/routes/` usam `@workspace/api-zod` e `@workspace/db`.
+
+- App setup: `src/app.ts` — CORS, JSON, routes em `/api`.
+- Routes: `src/routes/health.ts` expõe `GET /api/health`.
+- Depends on: `@workspace/db`, `@workspace/api-zod`.
+- `pnpm --filter @workspace/api-server run dev` — dev server.
+- `pnpm --filter @workspace/api-server run build` — esbuild bundle.
 
 ### `lib/db` (`@workspace/db`)
 
