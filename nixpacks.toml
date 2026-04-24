@@ -1,19 +1,20 @@
-# Bot Discord Vigilante Key - Configuração de Deploy no Railway
-# Este arquivo configura como o Railway vai instalar e rodar o bot
-# Não mexa aqui a menos que saiba o que está fazendo!
+# Configuração Nixpacks para Railway
+# Node 24 é instalado automaticamente pelo provider Node, lendo "engines" do package.json.
+# Aqui só adicionamos as dependências de sistema (ffmpeg, yt-dlp, python).
 
 [phases.setup]
-# Instala o Node.js 22, pnpm, ffmpeg (para áudio) e yt-dlp (para vídeos)
-nixPkgs = ["nodejs_22", "pnpm", "ffmpeg-full", "yt-dlp", "python3"]
+aptPkgs = ["ffmpeg", "python3", "python3-pip"]
+nixPkgs = ["yt-dlp"]
 
 [phases.install]
-# Instala as dependências do projeto
-cmds = ["pnpm install"]
+cmds = [
+  "corepack enable",
+  "corepack prepare pnpm@10.26.1 --activate",
+  "pnpm install --no-frozen-lockfile"
+]
 
 [phases.build]
-# Compila o código TypeScript
-cmds = ["pnpm run build"]
+cmds = ["pnpm --filter @workspace/api-server... run build"]
 
 [start]
-# Inicia o servidor do bot
 cmd = "pnpm --filter @workspace/api-server run start"
