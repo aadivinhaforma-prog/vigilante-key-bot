@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "8yElBakI3SMpAUEKolO2Z"
+uri = "file://DEPLOY_GUIDE.md"
+type = "text"
+title = "Guia de Deploy no Railway"
