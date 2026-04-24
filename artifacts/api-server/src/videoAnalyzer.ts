@@ -8,7 +8,7 @@ import axios from "axios";
 import OpenAI from "openai";
 import { logger } from "./lib/logger";
 import { aplicarWatermark } from "./lib/watermark";
-import { retry, classificarErroDownload } from "./lib/safety";
+import { retry, classificarErroDownload, ytDlpAntibloqueio } from "./lib/safety";
 
 const execFileAsync = promisify(execFile);
 
@@ -75,11 +75,11 @@ function formatDuration(seconds: number): string {
 
 export async function getVideoInfo(url: string): Promise<VideoInfo> {
   const { stdout } = await retry(() => execFileAsync("yt-dlp", [
+    ...ytDlpAntibloqueio(),
     "--print",
     "%(title)s\n%(duration)s\n%(uploader)s\n%(filesize_approx)s\n%(view_count)s\n%(is_live)s\n%(channel_follower_count)s\n%(thumbnail)s\n%(uploader_id)s",
     "--no-download",
     "--no-warnings",
-    "--extractor-args", "youtube:player_client=ios",
     url,
   ], { timeout: 30000 }));
 
@@ -119,36 +119,13 @@ export function validarParaDownload(info: VideoInfo): void {
 }
 
 async function downloadAudio(url: string, outputPath: string): Promise<void> {
-  const attempts = [
-    [
-      "--extractor-args", "youtube:player_client=ios",
-      "-x", "--audio-format", "mp3", "--audio-quality", "0",
-      "--no-warnings",
-      "-o", outputPath, url,
-    ],
-    [
-      "--extractor-args", "youtube:player_client=mweb",
-      "-x", "--audio-format", "mp3", "--audio-quality", "0",
-      "--no-warnings",
-      "-o", outputPath, url,
-    ],
-    [
-      "-x", "--audio-format", "mp3", "--audio-quality", "0",
-      "--no-warnings",
-      "-o", outputPath, url,
-    ],
+  const args = [
+    ...ytDlpAntibloqueio(),
+    "-x", "--audio-format", "mp3", "--audio-quality", "0",
+    "--no-warnings",
+    "-o", outputPath, url,
   ];
-
-  let lastErr: unknown;
-  for (const args of attempts) {
-    try {
-      await execFileAsync("yt-dlp", args, { timeout: 90000 });
-      return;
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-  throw lastErr;
+  await execFileAsync("yt-dlp", args, { timeout: 90000 });
 }
 
 async function detectMusicInSegment(audioPath: string, offsetSeconds: number): Promise<MusicResult | null> {
@@ -278,10 +255,10 @@ export async function downloadVideoComWatermark(url: string, info: VideoInfo): P
   const videoPath = path.join(tmpDir, `video_${sessionId}.mp4`);
   const template = videoPath.replace(".mp4", ".%(ext)s");
 
+  const baseArgs = ytDlpAntibloqueio();
   const attempts = [
-    ["--extractor-args", "youtube:player_client=ios", "-f", "best[ext=mp4]/best", "--max-filesize", "24M", "--no-warnings", "-o", template, url],
-    ["--extractor-args", "youtube:player_client=mweb", "-f", "best[ext=mp4]/best", "--max-filesize", "24M", "--no-warnings", "-o", template, url],
-    ["--extractor-args", "youtube:player_client=ios", "--max-filesize", "24M", "--no-warnings", "-o", template, url],
+    [...baseArgs, "-f", "best[ext=mp4]/best", "--max-filesize", "24M", "--no-warnings", "-o", template, url],
+    [...baseArgs, "--max-filesize", "24M", "--no-warnings", "-o", template, url],
   ];
 
   let downloaded = false;

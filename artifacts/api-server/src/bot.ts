@@ -35,7 +35,8 @@ import {
   validarLink,
   mensagemErroLink,
   checkAntiSpam,
-  linkDuplicado,
+  isLinkDuplicado,
+  registrarLinkAnalisado,
   checkLimiteDiario,
   incrementaUsoDiario,
   checkLimiteCriador,
@@ -661,8 +662,9 @@ async function handleVideo(cmd: ChatInputCommandInteraction): Promise<void> {
   }
   const cleanUrl = v.url;
 
-  // Link duplicado (item 24)
-  if (linkDuplicado(cmd.user.id, cleanUrl)) {
+  // Link duplicado (item 24) — APENAS verifica, NÃO registra.
+  // O registro acontece só DEPOIS que a análise/vídeo foi entregue com sucesso.
+  if (isLinkDuplicado(cmd.user.id, cleanUrl)) {
     await respond(cmd, "⚠️ Você já analisou esse vídeo recentemente.", { ephemeral: true });
     return;
   }
@@ -692,6 +694,8 @@ async function handleVideo(cmd: ChatInputCommandInteraction): Promise<void> {
       const result = await analyzeVideo(cleanUrl, info);
       const responseText = buildVideoResponse(result);
       await respond(cmd, responseText);
+      // SÓ registra como duplicado APÓS entregar a análise com sucesso
+      registrarLinkAnalisado(cmd.user.id, cleanUrl);
       adicionarHistorico(cmd.user.id, info.title, info.platform, cmd.guildId, calcChanceViral(info.views, 1));
       return;
     }
@@ -815,6 +819,9 @@ async function handleDownloadConfirm(btn: ButtonInteraction, confirmId: string):
 
     await btn.editReply({ content: responseText + aviso, files: [attachment] });
     try { fs.unlinkSync(videoFile); } catch { /* limpa */ }
+
+    // SÓ registra como duplicado APÓS entregar o vídeo com sucesso
+    registrarLinkAnalisado(btn.user.id, pending.url);
 
     // Histórico + conquistas
     const chance = calcChanceViral(pending.info.views, 1);

@@ -2,6 +2,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import OpenAI from "openai";
 import { logger } from "./lib/logger";
+import { ytDlpAntibloqueio } from "./lib/safety";
 
 const execFileAsync = promisify(execFile);
 
@@ -67,10 +68,10 @@ async function fetchRealVideos(
   }
 
   const args = [
+    ...ytDlpAntibloqueio(),
     "--flat-playlist",
     "--print", printFormat,
     "--playlist-items", "1-20", // pega 20 para filtrar melhor
-    "--extractor-args", "youtube:player_client=ios",
     "--no-warnings",
     sourceUrl,
   ];

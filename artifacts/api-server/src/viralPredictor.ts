@@ -5,6 +5,7 @@ import path from "path";
 import os from "os";
 import OpenAI from "openai";
 import { logger } from "./lib/logger";
+import { ytDlpAntibloqueio } from "./lib/safety";
 
 const execFileAsync = promisify(execFile);
 
@@ -84,9 +85,9 @@ async function getComments(url: string): Promise<string[]> {
 
   try {
     await execFileAsync("yt-dlp", [
+      ...ytDlpAntibloqueio(),
       "--write-comments",
       "--no-download",
-      "--extractor-args", "youtube:player_client=ios",
       "--no-warnings",
       "-o", outputTemplate,
       url,
@@ -119,10 +120,10 @@ async function getComments(url: string): Promise<string[]> {
 
 async function getVideoMeta(url: string) {
   const { stdout } = await execFileAsync("yt-dlp", [
+    ...ytDlpAntibloqueio(),
     "--print",
     "%(title)s\n%(channel)s\n%(view_count)s\n%(duration)s\n%(like_count)s\n%(is_live)s\n%(concurrent_view_count)s\n%(channel_follower_count)s\n%(comment_count)s",
     "--no-download",
-    "--extractor-args", "youtube:player_client=ios",
     "--no-warnings",
     url,
   ], { timeout: 30000 });
@@ -147,10 +148,10 @@ async function getVideoMeta(url: string) {
 async function getChannelMeta(url: string) {
   // Info básica do canal
   const { stdout: infoOut } = await execFileAsync("yt-dlp", [
+    ...ytDlpAntibloqueio(),
     "--print", "%(channel)s\n%(channel_follower_count)s",
     "--playlist-items", "1",
     "--no-warnings",
-    "--extractor-args", "youtube:player_client=ios",
     url,
   ], { timeout: 30000 });
 
@@ -165,10 +166,10 @@ async function getChannelMeta(url: string) {
 
   try {
     const { stdout: videosOut } = await execFileAsync("yt-dlp", [
+      ...ytDlpAntibloqueio(),
       "--flat-playlist",
       "--print", "%(title)s|||%(view_count)s",
       "--no-warnings",
-      "--extractor-args", "youtube:player_client=ios",
       url,
     ], { timeout: 180000 }); // 3 minutos para canais grandes
 

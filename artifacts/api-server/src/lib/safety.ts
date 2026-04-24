@@ -213,28 +213,104 @@ export function checkAntiSpam(userId: string): SpamStatus {
   return { ok: true };
 }
 
+// ─── yt-dlp: contornar bloqueio do YouTube ────────────────────
+//
+// O YouTube bloqueia user-agents/clients antigos e chega a exigir
+// "Sign in to confirm you're not a bot" mesmo em vídeos públicos.
+// Estratégia 2025/2026:
+//  - tentar múltiplos player_client (tv funciona melhor; android_vr / mweb / web_safari como fallback)
+//  - User-Agent realista de browser desktop
+//  - opcional: cookies via env YOUTUBE_COOKIES (Netscape format) — útil se ainda assim bloquear
+//  - --geo-bypass pra contornar restrições regionais
+//  - --no-check-certificate pra evitar problema de TLS em algumas regiões
+
+import os from "os";
+import fs from "fs";
+import path from "path";
+
+const YT_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+let cookiesFilePath: string | null = null;
+
+function getCookiesFilePath(): string | null {
+  if (cookiesFilePath !== null) return cookiesFilePath || null;
+  const raw = process.env["YOUTUBE_COOKIES"];
+  if (!raw || raw.trim().length === 0) {
+    cookiesFilePath = "";
+    return null;
+  }
+  const tmp = path.join(os.tmpdir(), `yt_cookies_${process.pid}.txt`);
+  try {
+    fs.writeFileSync(tmp, raw, { encoding: "utf-8", mode: 0o600 });
+    cookiesFilePath = tmp;
+    return tmp;
+  } catch {
+    cookiesFilePath = "";
+    return null;
+  }
+}
+
+/**
+ * Argumentos COMUNS pra todas as chamadas yt-dlp (anti-bloqueio).
+ * Retorna array que deve ir ANTES dos args específicos da operação.
+ */
+export function ytDlpAntibloqueio(): string[] {
+  const args = [
+    "--user-agent", YT_USER_AGENT,
+    "--geo-bypass",
+    "--no-check-certificate",
+    "--retries", "3",
+    "--fragment-retries", "3",
+    "--extractor-args", "youtube:player_client=tv,android_vr,mweb,web_safari,ios",
+  ];
+  const cookies = getCookiesFilePath();
+  if (cookies) {
+    args.push("--cookies", cookies);
+  }
+  return args;
+}
+
 // ─── Link duplicado (item 24) ────────────────────────────────
 
 const LINK_DUPLICADO_MS = 60 * 60 * 1000; // 1 hora
 
-export function linkDuplicado(userId: string, url: string): boolean {
+/**
+ * Verifica se o link foi analisado recentemente pelo usuário.
+ * NÃO registra nada — apenas checa. Use registrarLinkAnalisado() depois
+ * que o conteúdo foi entregue com sucesso.
+ */
+export function isLinkDuplicado(userId: string, url: string): boolean {
   const cutoff = Date.now() - LINK_DUPLICADO_MS;
   const row = db.prepare(`
     SELECT enviado_em FROM link_recente WHERE user_id = ? AND url = ?
   `).get(userId, url) as { enviado_em: number } | undefined;
+  return !!(row && row.enviado_em > cutoff);
+}
 
-  if (row && row.enviado_em > cutoff) return true;
-
+/**
+ * Registra o link como entregue ao usuário.
+ * SÓ chamar APÓS confirmar que a análise / vídeo foi enviada com sucesso.
+ * Se algo falhou no meio do processo, NÃO chamar — o usuário deve poder
+ * tentar de novo com o mesmo link.
+ */
+export function registrarLinkAnalisado(userId: string, url: string): void {
+  const cutoff = Date.now() - LINK_DUPLICADO_MS;
   db.prepare(`
     INSERT INTO link_recente (user_id, url, enviado_em)
     VALUES (?, ?, ?)
     ON CONFLICT(user_id, url) DO UPDATE SET enviado_em = excluded.enviado_em
   `).run(userId, url, Date.now());
-
   // Limpa antigos
   db.prepare("DELETE FROM link_recente WHERE enviado_em < ?").run(cutoff);
+}
 
-  return false;
+/** @deprecated use isLinkDuplicado + registrarLinkAnalisado separadamente */
+export function linkDuplicado(userId: string, url: string): boolean {
+  const dup = isLinkDuplicado(userId, url);
+  if (!dup) registrarLinkAnalisado(userId, url);
+  return dup;
 }
 
 // ─── Limite diário do servidor (item 29) ─────────────────────
