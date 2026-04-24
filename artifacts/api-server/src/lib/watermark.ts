@@ -7,7 +7,8 @@ import { logger } from "./logger";
 const execFileAsync = promisify(execFile);
 
 /**
- * Aplica marca d'água com o @ do criador no canto inferior direito.
+ * Aplica marca d'água com o @ do criador CENTRALIZADA no vídeo.
+ * Texto grande, semitransparente (~35%), visível durante todo o vídeo.
  * Usa ffmpeg drawtext. SE FALHAR, lança erro — o vídeo NÃO deve ser enviado sem watermark.
  *
  * @param inputPath caminho do vídeo de entrada
@@ -32,14 +33,17 @@ export async function aplicarWatermark(inputPath: string, creatorHandle: string)
   // Escapa caracteres especiais do drawtext
   const textoEscapado = texto.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/:/g, "\\:");
 
-  // drawtext: texto branco com sombra preta no canto inferior direito
-  // Usa fonte padrão do sistema; fontsize relativo à altura
+  // drawtext CENTRALIZADO:
+  // - fontsize=h/10  -> letras grandes (10% da altura)
+  // - fontcolor=white@0.35 -> ~35% de opacidade (semitransparente)
+  // - borderw sutil só pra dar legibilidade em fundos claros
+  // - x/y centralizados via (W-text_w)/2 e (H-text_h)/2
+  // - sem timing -> visível durante TODO o vídeo
   const drawtext =
     `drawtext=text='${textoEscapado}':` +
-    `fontcolor=white:fontsize=h/22:` +
-    `borderw=2:bordercolor=black@0.7:` +
-    `box=1:boxcolor=black@0.45:boxborderw=8:` +
-    `x=w-tw-20:y=h-th-20`;
+    `fontcolor=white@0.35:fontsize=h/10:` +
+    `borderw=2:bordercolor=black@0.25:` +
+    `x=(w-text_w)/2:y=(h-text_h)/2`;
 
   try {
     await execFileAsync("ffmpeg", [
